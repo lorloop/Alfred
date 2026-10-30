@@ -672,7 +672,7 @@ test('interruption : hésitations, acquiescements et écho ne coupent pas Cornel
 });
 
 /** Cornelius parle 3 s ; on lui parle 1,5 s pendant ce temps, Whisper entend `heard`. */
-async function talkOver(heard: string) {
+async function talkOver(heard: string, speech: Buffer[] = [pcm(1500, true)]) {
   const ai = fakeLocalAI();
   const transcripts = ['Quelle heure est-il ?', heard, heard];
   const fetch: typeof globalThis.fetch = async (input, init) => {
@@ -694,7 +694,7 @@ async function talkOver(heard: string) {
   connection.audio(pcm(600, true));
   connection.audio(pcm(400, false));
   await waitFor(() => events.some((event) => event.type === 'state' && event.state === 'speaking'));
-  connection.audio(pcm(1500, true));
+  for (const chunk of speech) connection.audio(chunk);
   await waitFor(() => logs.some((entry) => entry.message === 'Interruption vérifiée'));
   connection.audio(pcm(400, false));
   return { transcripts, events, logs, connection };
@@ -723,5 +723,13 @@ test('une vraie parole pendant que Cornelius parle le coupe et devient la questi
   await waitFor(() => events.filter((event) => event.type === 'user_transcript').length === 2);
   const last = events.filter((event) => event.type === 'user_transcript').at(-1);
   assert.equal(last?.type === 'user_transcript' && last.text, 'Non, attends, plutôt la météo.');
+  await connection.close();
+});
+
+test('une voix atténuée et hachée par l’annulation d’écho coupe quand même Cornelius', async () => {
+  // Sous le seuil habituel (0,01) et jamais plus de 60 ms d’affilée.
+  const speech = Array.from({ length: 20 }, () => [pcm(60, false, 350), pcm(40, false)]).flat();
+  const { events, connection } = await talkOver('Non, attends.', speech);
+  assert.ok(events.some((event) => event.type === 'interrupted'));
   await connection.close();
 });

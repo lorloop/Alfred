@@ -22,6 +22,13 @@ const SPEECH_RUN_FRAMES = 3;
 const MAX_UTTERANCE_MS = 30_000;
 /** Parole continue nécessaire pour couper Cornelius pendant qu’il parle (écho du haut-parleur). */
 const BARGE_IN_MS = 400;
+/**
+ * Seuil de parole pendant que Cornelius parle : l’annulation d’écho du navigateur atténue aussi la
+ * voix de la personne, souvent sous le seuil habituel. La transcription trie ensuite écho et bruit.
+ */
+const BARGE_IN_FLOOR = 0.004;
+/** Son gardé avant le déclenchement d’une interruption : la parole hachée met plus de 400 ms à l’atteindre. */
+const BARGE_IN_PRE_ROLL_MS = 1_000;
 /** Son transcrit pour vérifier une interruption : assez pour « attends » ou « non, stop ». */
 const BARGE_IN_SAMPLE_MS = 1_200;
 const BARGE_IN_CHECK_TIMEOUT_MS = 5_000;
@@ -749,6 +756,7 @@ export function createLocalVoiceAdapter(
       let silenceMs = 0;
       let voicedRun = 0;
       let loudMs = 0;
+      let loudPeak = 0;
       let noise = 0.005;
       let peak = 0;
       let framesSeen = 0;
@@ -806,16 +814,25 @@ export function createLocalVoiceAdapter(
             seuil: Number(threshold.toFixed(4)),
             crete: Number(peak.toFixed(4)),
             phraseEnCours: !!utterance,
+            etat: state,
+            // Parole entendue pendant la réponse : il faut 400 ms pour lancer une interruption.
+            ...(turn ? { interruptionMs: loudPeak } : {}),
           });
           lastLevelLog = now();
           peak = 0;
+          loudPeak = 0;
         }
         if (calibrating) return;
         // Pendant que Cornelius parle, seule une parole assez longue le coupe (son propre écho).
         // Avant qu’il parle, rien n’annule la question en cours : avec un micro qui capte le
         // bruit de la pièce, la moindre rumeur effaçait la réponse avant qu’elle soit dite.
         if (turn) {
-          loudMs = voiced ? loudMs + 20 : 0;
+          const listening = state === 'speaking' && settings.bargeIn;
+          const heard = listening ? level > Math.max(BARGE_IN_FLOOR, noise * 3) : voiced;
+          // Une parole hachée par l’annulation d’écho compte quand même : un blanc retire moins
+          // qu’une trame de parole n’ajoute, au lieu de tout remettre à zéro.
+          loudMs = heard ? loudMs + 20 : listening ? Math.max(0, loudMs - 10) : 0;
+          loudPeak = Math.max(loudPeak, loudMs);
           // Interruption en vérification : Cornelius continue de parler, le son est gardé.
           if (bargeIn) {
             bargeIn.frames.push(frame);
@@ -823,10 +840,10 @@ export function createLocalVoiceAdapter(
               checkBargeIn(bargeIn);
             return;
           }
-          const needed = state === 'speaking' && settings.bargeIn ? BARGE_IN_MS : Infinity;
-          // Le tampon garde aussi les 400 ms de parole qui déclenchent la vérification.
+          const needed = listening ? BARGE_IN_MS : Infinity;
+          // Le tampon garde aussi la parole qui déclenche la vérification.
           preRoll.push(frame);
-          while (preRoll.length > (PRE_ROLL_MS + BARGE_IN_MS) / 20) preRoll.shift();
+          while (preRoll.length > BARGE_IN_PRE_ROLL_MS / 20) preRoll.shift();
           if (loudMs < needed) return;
           bargeIn = {
             frames: [...preRoll],
@@ -898,6 +915,8 @@ export function createLocalVoiceAdapter(
         llm: settings.llm.model,
         ecoute: settings.stt.model,
         voix: settings.tts.model,
+        interruption: settings.bargeIn,
+        reflexion: settings.reasoning,
       });
 
       // Accueil : phrase imposée, ou générée par le LLM selon les consignes d’ouverture.
