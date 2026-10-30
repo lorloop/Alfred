@@ -217,6 +217,8 @@ test('un tour complet : parole, transcription, outil, réponse parlée', async (
     (chats[0]!.body as Record<string, unknown>).chat_template_kwargs !== undefined,
     true,
   );
+  // LocalAI ignore chat_template_kwargs avec certains gabarits : la réflexion se coupe ici.
+  assert.equal((chats[0]!.body as Record<string, unknown>).reasoning_effort, 'none');
   const spoken = ai.calls
     .filter((item) => item.url.endsWith('/audio/speech'))
     .map((item) => (item.body as { input: string }).input);

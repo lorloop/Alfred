@@ -24,9 +24,13 @@ export function localClient(
 
 /**
  * Qwen3 et ses dérivés réfléchissent à voix haute par défaut : coûteux pour une conversation.
- * LocalAI transmet ces options au modèle de discussion ; les autres serveurs les ignorent.
+ * `reasoning_effort: 'none'` coupe la réflexion dans LocalAI ; `chat_template_kwargs` sert aux
+ * serveurs qui passent les options au gabarit (vLLM, llama.cpp). Les autres les ignorent.
  */
-export const NO_THINKING = { chat_template_kwargs: { enable_thinking: false } } as const;
+export const NO_THINKING = {
+  reasoning_effort: 'none',
+  chat_template_kwargs: { enable_thinking: false },
+} as const;
 
 /** Retire un raisonnement <think>…</think> resté dans la réponse et les clôtures Markdown. */
 export function stripReasoning(text: string): string {
