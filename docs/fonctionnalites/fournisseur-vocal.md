@@ -52,6 +52,7 @@ Les tests automatiques simulent Mistral : ils ne prouvent ni l’accès de votre
 
 ## Voir aussi
 
+- [Le cerveau local](cerveau-local.md) : troisième fournisseur de ce fork, avec vos propres serveurs (LocalAI…).
 - [Confidentialité](../reference/confidentialite.md) : ce qui part chez chaque fournisseur.
 - [L’administration](../utilisation/administration.md) : les cartes **Clés et jetons** et **Voix de Cornelius**.
 - [Configuration](../reference/configuration.md) : `OPENAI_API_KEY` et `MISTRAL_API_KEY`.

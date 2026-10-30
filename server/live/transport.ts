@@ -281,7 +281,8 @@ export class LiveTransport implements SessionTransport {
     this.controller = controller;
   }
   meteredByDuration(): boolean {
-    return (this.active?.gateway ?? this.gateway)?.provider === 'mistral';
+    const provider = (this.active?.gateway ?? this.gateway)?.provider;
+    return provider === 'mistral' || provider === 'local';
   }
   onFirstAssistantResponse(listener: (scope: Scope) => void): () => void {
     this.audioCatchupListeners.add(listener);

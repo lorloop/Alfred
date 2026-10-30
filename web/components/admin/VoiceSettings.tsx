@@ -49,7 +49,12 @@ export function VoiceSettings({ state, run }: { state: MirrorState; run: RunActi
             ))}
           </NativeSelect>
         </Field>
-        {state.voiceProvider === 'mistral' ? (
+        {state.voiceProvider === 'local' ? (
+          <p className="text-sm text-muted-foreground">
+            Écoute, réponses et voix passent par vos propres serveurs, réglés dans la carte Cerveau
+            local ci-dessous. Aucune clé en ligne n’est nécessaire.
+          </p>
+        ) : state.voiceProvider === 'mistral' ? (
           <p className="text-sm text-muted-foreground">
             Voxtral 3 écoute et répond en français avec la voix Marie. La clé OpenAI reste
             disponible pour les images.

@@ -16,6 +16,7 @@ import type {
   SecretView,
 } from '../shared/types';
 import type { DelegationMode } from '../shared/delegation';
+import type { LocalAISettings, LocalAITestResult, LocalAIView } from '../shared/local-ai';
 import type { CardSettings } from '../shared/cards';
 import type { AdmissionSound } from '../shared/admission-sound';
 import type { GreetingMode, SilenceClose } from '../shared/conversation';
@@ -266,6 +267,11 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(settings),
     }),
+  localAI: () => request<LocalAIView>('/api/admin/local-ai'),
+  saveLocalAI: (settings: LocalAISettings) =>
+    request<LocalAIView>('/api/admin/local-ai', { method: 'PUT', body: JSON.stringify(settings) }),
+  testLocalAI: (settings: LocalAISettings) =>
+    post<LocalAITestResult[]>('/api/admin/local-ai/test', { settings }, { timeoutMs: 180_000 }),
   voiceProvider: (provider: string) =>
     request<StateEvent>('/api/admin/voice-provider', {
       method: 'PATCH',

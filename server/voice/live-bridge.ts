@@ -21,17 +21,21 @@ export function mistralToolDescription(description: string): string {
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 
-function connectionErrorMessage(error: unknown): string {
+function connectionErrorMessage(error: unknown, name: string): string {
   const value = record(error);
   const status = value.statusCode ?? value.status;
   return typeof status === 'number'
-    ? `Mistral a refusé la création de la session (${status}).`
-    : 'Connexion à la session vocale Mistral impossible.';
+    ? `${name} a refusé la création de la session (${status}).`
+    : `Connexion à la session vocale ${name} impossible.`;
 }
 /** Compatibility boundary: existing authorization, tool dispatch and card handling stay local. */
-export function createVoiceGateway(adapter: VoiceProviderAdapter): LiveGateway {
+export function createVoiceGateway(
+  adapter: VoiceProviderAdapter,
+  provider: 'mistral' | 'local' = 'mistral',
+): LiveGateway {
+  const name = provider === 'local' ? 'LocalAI' : 'Mistral';
   return {
-    provider: 'mistral',
+    provider,
     serverAudio: true,
     async create() {
       throw new Error('Ce fournisseur utilise le transport PCM du serveur.');
@@ -178,8 +182,10 @@ export function createVoiceGateway(adapter: VoiceProviderAdapter): LiveGateway {
               error: {
                 code: event.code,
                 message: event.message
-                  ? 'Session Mistral : ' + event.message
-                  : 'Session Mistral interrompue. Vérifiez la clé, l’accès Voice Agents et le quota.',
+                  ? `Session ${name} : ` + event.message
+                  : provider === 'local'
+                    ? 'Session LocalAI interrompue. Vérifiez les adresses et les modèles du cerveau local.'
+                    : 'Session Mistral interrompue. Vérifiez la clé, l’accès Voice Agents et le quota.',
               },
             });
             break;
@@ -199,8 +205,8 @@ export function createVoiceGateway(adapter: VoiceProviderAdapter): LiveGateway {
             emit({
               type: 'error',
               error: {
-                code: 'mistral_session_create_failed',
-                message: connectionErrorMessage(error),
+                code: `${provider}_session_create_failed`,
+                message: connectionErrorMessage(error, name),
               },
             });
             handlers.failure();
@@ -271,7 +277,7 @@ export function createVoiceGateway(adapter: VoiceProviderAdapter): LiveGateway {
             .catch(() => {
               emit({
                 type: 'voice.provider_warning',
-                error: { code: 'mistral_session_update_failed' },
+                error: { code: `${provider}_session_update_failed` },
               });
               // The initial session already contains the complete configuration. A provider can
               // reject a mid-session greeting/context refresh; keep audio alive and let the next

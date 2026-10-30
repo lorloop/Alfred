@@ -78,6 +78,13 @@ export function needsCamera(opening: Opening, vision?: VisionMode): boolean {
   return cameraWatchesInStandby(opening) || opening.recognizeVoice || vision !== 'off';
 }
 
+const keyTitle = (state: MirrorState) =>
+  state.voiceProvider === 'local'
+    ? 'Cerveau local'
+    : state.voiceProvider === 'mistral'
+      ? 'Clé Mistral'
+      : 'Clé OpenAI';
+
 /** Liste de préparation, dans l’ordre où les étapes se font au premier lancement. */
 export function readinessChecklist(input: ReadinessInput): ReadinessItem[] {
   const { state, devices, defaultPassword, enrolledFaces } = input;
@@ -92,15 +99,20 @@ export function readinessChecklist(input: ReadinessInput): ReadinessItem[] {
       ? {
           id: 'openai-key',
           status: 'done',
-          title: state.voiceProvider === 'mistral' ? 'Clé Mistral' : 'Clé OpenAI',
-          detail: 'Renseignée. Elle reste sur cet ordinateur.',
+          title: keyTitle(state),
+          detail:
+            state.voiceProvider === 'local'
+              ? 'Adresse et modèle renseignés.'
+              : 'Renseignée. Elle reste sur cet ordinateur.',
         }
       : {
           id: 'openai-key',
           status: 'todo',
-          title: state.voiceProvider === 'mistral' ? 'Clé Mistral' : 'Clé OpenAI',
+          title: keyTitle(state),
           detail:
-            'Sans elle, Cornelius ne peut pas parler. Collez-la plus bas, dans « Clés et jetons » : elle compte tout de suite.',
+            state.voiceProvider === 'local'
+              ? 'Sans lui, Cornelius ne peut pas parler. Renseignez l’adresse et le modèle du LLM dans Voix de Cornelius → Cerveau local.'
+              : 'Sans elle, Cornelius ne peut pas parler. Collez-la plus bas, dans « Clés et jetons » : elle compte tout de suite.',
           action: { kind: 'doc', path: 'docs/installation/premier-demarrage.md' },
         },
     perceptionItem(perception, camera),

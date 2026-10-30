@@ -2,6 +2,7 @@ import { createProviderAudioSession } from './provider-session';
 import { reportDiagnostic } from '../diagnostics';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { MirrorState } from '../../shared/types';
+import { usesServerAudio } from '../../shared/voice-provider';
 import {
   invalidateAudioPreparation,
   audioPreparation,
@@ -82,8 +83,9 @@ export function useVoice(state: MirrorState | null, fresh: boolean) {
       if (existing) active.current = existing;
       else if (fresh && scope.phase === 'connecting') {
         try {
-          const create =
-            state?.voiceProvider === 'mistral' ? createProviderAudioSession : createAudioSession;
+          const create = usesServerAudio(state?.voiceProvider)
+            ? createProviderAudioSession
+            : createAudioSession;
           const audio = create(
             sessionScope,
             (kind) => {

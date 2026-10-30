@@ -1,6 +1,9 @@
 import { isVoiceProvider } from '../shared/voice-provider.js';
 import { createVoiceGateway } from './voice/live-bridge.js';
 import { createMistralMemoryExtractor } from './voice/memory-extractor.js';
+import { createLocalMemoryExtractor } from './voice/local-memory-extractor.js';
+import { LocalAIStore } from './local-ai-store.js';
+import { registerLocalAI } from './local-ai-api.js';
 import { isCardSettings } from '../shared/cards.js';
 import { isLiveVoice } from '../shared/voices.js';
 import { isOrbScale, ORB_SCALE_MAX, ORB_SCALE_MIN } from '../shared/display.js';
@@ -208,6 +211,7 @@ export async function createApp(
   const openaiKey = () => secretStore.get('OPENAI_API_KEY');
   const eraser = new PersonalDataEraser(db, config.databasePath, logs);
   const preferences = new SessionPreferences(db);
+  const localAI = new LocalAIStore(db);
   normalizeOpening(preferences);
   const personality = new PersonalityRepository(db);
   const addonInstances = new AddonRepository(db);
@@ -288,12 +292,32 @@ export async function createApp(
   );
   const agents = new Agents(new AgentRepository(db, now), new HermesClient(http, now), now);
   const initialKey = openaiKey();
-  const selectedVoiceKey = () =>
-    secretStore.get(
-      preferences.getVoiceProvider() === 'mistral' ? 'MISTRAL_API_KEY' : 'OPENAI_API_KEY',
+  // Cerveau local (fork Alfred) : des adresses de serveurs au lieu d’une clé.
+  const localVoice = () => preferences.getVoiceProvider() === 'local';
+  const localGateway = () =>
+    createVoiceGateway(
+      {
+        async connect(config, emit) {
+          const { createLocalVoiceAdapter } = await import('./voice/local.js');
+          return createLocalVoiceAdapter(localAI.get(), {
+            apiKey: localAI.apiKey(),
+            log: (message, details) => logs.write('warn', 'local', message, details),
+          }).connect(config, emit);
+        },
+      },
+      'local',
     );
+  const selectedVoiceKey = () =>
+    localVoice()
+      ? localAI.ready()
+        ? 'local'
+        : undefined
+      : secretStore.get(
+          preferences.getVoiceProvider() === 'mistral' ? 'MISTRAL_API_KEY' : 'OPENAI_API_KEY',
+        );
   const voiceGateway = () => {
     const key = selectedVoiceKey();
+    if (key && localVoice()) return localGateway();
     return !key
       ? null
       : preferences.getVoiceProvider() === 'mistral'
@@ -307,6 +331,8 @@ export async function createApp(
   };
   const voiceMemoryExtractor = () => {
     const key = selectedVoiceKey();
+    if (key && localVoice())
+      return createLocalMemoryExtractor(() => localAI.get(), localAI.apiKey());
     return !key
       ? null
       : preferences.getVoiceProvider() === 'mistral'
@@ -343,7 +369,9 @@ export async function createApp(
       ? 'Connexions IA bloquées par l’administration'
       : initialVoiceKey
         ? 'Clé vocale configurée ; connexion uniquement au démarrage d’une session'
-        : `Clé ${initialProvider === 'mistral' ? 'Mistral' : 'OpenAI'} absente`,
+        : initialProvider === 'local'
+          ? 'Cerveau local incomplet : LLM, écoute et voix à renseigner'
+          : `Clé ${initialProvider === 'mistral' ? 'Mistral' : 'OpenAI'} absente`,
   );
   const controller = new SessionController(profiles, live, now, preferences, (name, details) =>
     logs.write('info', 'mesure', name, details),
@@ -753,6 +781,16 @@ export async function createApp(
   };
   secretStore.onChange((name) => {
     if (name === MAIL_PASSWORD_SECRET) mailChanged();
+  });
+  registerLocalAI(app, {
+    store: localAI,
+    requireAdmin,
+    onChange: () => {
+      live.setGateway(voiceGateway());
+      if (!options.memoryExtractor) memory.setExtractor(voiceMemoryExtractor());
+      controller.setSetup({ voiceKey: !!selectedVoiceKey() });
+      broadcast({ schemaVersion: 1, type: 'devices', status: devices() }, true);
+    },
   });
   registerMail(app, {
     mailer,
@@ -1377,7 +1415,15 @@ export async function createApp(
         return reply
           .code(409)
           .send({ error: 'Terminez la conversation avant de changer de fournisseur.' });
-      if (!secretStore.get(provider === 'mistral' ? 'MISTRAL_API_KEY' : 'OPENAI_API_KEY'))
+      if (provider === 'local' && !localAI.ready())
+        return reply.code(400).send({
+          error:
+            'Renseignez d’abord le cerveau local : adresse et modèle du LLM, de l’écoute et de la voix.',
+        });
+      if (
+        provider !== 'local' &&
+        !secretStore.get(provider === 'mistral' ? 'MISTRAL_API_KEY' : 'OPENAI_API_KEY')
+      )
         return reply.code(400).send({
           error: 'Ajoutez d’abord la clé de ce fournisseur dans Mise en route → Clés et jetons.',
         });

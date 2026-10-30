@@ -22,6 +22,7 @@ import { Agents } from './admin/Agents';
 import { Diagnostics } from './admin/Diagnostics';
 import { AdminPasswordCard, RestartServerCard } from './admin/ServerControls';
 import { VoiceSettings } from './admin/VoiceSettings';
+import { LocalAISettings } from './admin/LocalAISettings';
 import { OrbScaleSettings } from './admin/OrbScaleSettings';
 import { ScreensaverSettings } from './admin/ScreensaverSettings';
 import { Secrets } from './admin/Secrets';
@@ -577,6 +578,9 @@ export function Admin({
                   )}
                   {section === 'start' && <Secrets run={run} />}
                   {section === 'start' && <VoiceSettings state={state} run={run} />}
+                  {section === 'start' && state.voiceProvider === 'local' && (
+                    <LocalAISettings run={run} />
+                  )}
                   {section === 'start' && devices && (
                     <AdminPasswordCard defaultPassword={devices.defaultPassword} run={run} />
                   )}

@@ -1,4 +1,5 @@
 import { isVoiceProvider, type VoiceProvider } from '../shared/voice-provider.js';
+import { localAIActive, setLocalAIActive } from './local-ai-store.js';
 import { ORB_SCALE_MAX, ORB_SCALE_MIN } from '../shared/display.js';
 import { DEFAULT_CARD_SETTINGS, type CardSettings } from '../shared/cards.js';
 import { DEFAULT_LIVE_VOICE, isLiveVoice, type LiveVoice } from '../shared/voices.js';
@@ -639,12 +640,15 @@ export class SessionPreferences {
       .run(settings.maxCards, Number(settings.compactSecondary), settings.lifetimeMs);
   }
   getVoiceProvider(): VoiceProvider {
+    if (localAIActive(this.db)) return 'local';
     const value = this.db
       .prepare('SELECT provider FROM voice_provider_preferences WHERE id = 1')
       .get()?.provider;
     return isVoiceProvider(value) ? value : 'openai';
   }
   setVoiceProvider(provider: VoiceProvider): void {
+    setLocalAIActive(this.db, provider === 'local');
+    if (provider === 'local') return;
     this.db
       .prepare('UPDATE voice_provider_preferences SET provider = ? WHERE id = 1')
       .run(provider);
