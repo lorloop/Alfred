@@ -474,6 +474,12 @@ export function createLocalVoiceAdapter(
           if (!calls.size) {
             for (const sentence of splitter.flush()) voice.say(sentence);
             if (said) history.push({ role: 'assistant', content: said });
+            // Une réponse vide reste silencieuse : le journal dit pourquoi on n’a rien entendu.
+            log(said || spoken ? 'info' : 'warn', 'Réponse du LLM', {
+              caracteres: (spoken + ' ' + said).trim().length,
+              etapes: round + 1,
+              brut: content.length,
+            });
             return (spoken + ' ' + said).trim();
           }
           // Une phrase d’attente (« Je regarde… ») reste prononcée avant les outils.
@@ -591,12 +597,12 @@ export function createLocalVoiceAdapter(
           peak = 0;
         }
         if (calibrating) return;
-        // Pendant la réponse, seule une parole assez longue coupe Cornelius (son propre écho) ;
-        // avant qu’il parle, reprendre la parole remplace simplement la question en cours.
+        // Pendant que Cornelius parle, seule une parole assez longue le coupe (son propre écho).
+        // Avant qu’il parle, rien n’annule la question en cours : avec un micro qui capte le
+        // bruit de la pièce, la moindre rumeur effaçait la réponse avant qu’elle soit dite.
         if (turn) {
           loudMs = voiced ? loudMs + 20 : 0;
-          const needed =
-            state !== 'speaking' ? MIN_SPEECH_MS : settings.bargeIn ? BARGE_IN_MS : Infinity;
+          const needed = state === 'speaking' && settings.bargeIn ? BARGE_IN_MS : Infinity;
           if (loudMs < needed) {
             preRoll.push(frame);
             while (preRoll.length > PRE_ROLL_MS / 20) preRoll.shift();
@@ -621,7 +627,10 @@ export function createLocalVoiceAdapter(
         // Un pic isolé (souffle, clic) compte comme du silence : seule une parole d’au moins
         // 60 ms relance l’attente de fin de phrase. Sinon un micro sensible ne la trouve jamais.
         voicedRun = voiced ? voicedRun + 1 : 0;
-        if (voiced) voicedMs += 20;
+        // Seule la parole soutenue compte : une phrase faite de pics de bruit n’atteint pas le
+        // minimum et ne part pas à la transcription.
+        if (voicedRun === SPEECH_RUN_FRAMES) voicedMs += SPEECH_RUN_FRAMES * 20;
+        else if (voicedRun > SPEECH_RUN_FRAMES) voicedMs += 20;
         if (voicedRun >= SPEECH_RUN_FRAMES) silenceMs = 0;
         else silenceMs += 20;
         const length = utterance.length * 20;

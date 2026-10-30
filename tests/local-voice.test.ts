@@ -435,3 +435,56 @@ test('des pics de bruit isolés n’empêchent pas la fin de phrase (micro sensi
   await waitFor(() => events.some((event) => event.type === 'user_transcript'));
   await connection.close();
 });
+
+test('un bruit pendant que le LLM réfléchit n’annule pas la réponse', async () => {
+  const ai = fakeLocalAI();
+  // Le LLM met 400 ms à répondre, le temps pour la pièce de faire du bruit.
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.endsWith('/chat/completions')) await new Promise((resolve) => setTimeout(resolve, 400));
+    return ai.fetch(input, init);
+  };
+  const events: VoiceEvent[] = [];
+  const connection = await createLocalVoiceAdapter(settings, { fetch }).connect(
+    { instructions: '', tools: [], webSearch: false },
+    (event) => events.push(event),
+  );
+  connection.audio(pcm(1000, false));
+  connection.audio(pcm(600, true));
+  connection.audio(pcm(400, false));
+  await waitFor(() => events.some((event) => event.type === 'state' && event.state === 'thinking'));
+  connection.audio(pcm(500, true));
+  // Le faux LocalAI demande d’abord l’outil de l’heure.
+  await waitFor(() => events.some((event) => event.type === 'tool_call'));
+  const call = events.find((event) => event.type === 'tool_call');
+  connection.result(call?.type === 'tool_call' ? call.id : '', '{"heure":"10:00"}');
+  await waitFor(() => events.some((event) => event.type === 'assistant_transcript'));
+  assert.equal(
+    events.some((event) => event.type === 'interrupted'),
+    false,
+  );
+  await connection.close();
+});
+
+test('des pics de bruit seuls ne partent pas à la transcription', async () => {
+  const ai = fakeLocalAI();
+  const logs: string[] = [];
+  const connection = await createLocalVoiceAdapter(settings, {
+    fetch: ai.fetch,
+    log: (_level, message) => logs.push(message),
+  }).connect({ instructions: '', tools: [], webSearch: false }, () => {});
+  connection.audio(pcm(1000, false));
+  // Dix clics de 40 ms : 400 ms au-dessus du seuil, mais jamais 60 ms d’affilée.
+  for (let i = 0; i < 10; i++) {
+    connection.audio(pcm(40, true));
+    connection.audio(pcm(60, false));
+  }
+  connection.audio(pcm(1000, false));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(logs.includes('Fin de phrase détectée'));
+  assert.equal(
+    ai.calls.some((call) => call.url.endsWith('/audio/transcriptions')),
+    false,
+  );
+  await connection.close();
+});
