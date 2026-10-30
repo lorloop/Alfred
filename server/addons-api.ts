@@ -174,6 +174,8 @@ export function registerAddons(
     logs: DiagnosticLog;
     /** Dossiers de addons/ refusés au chargement, avec la raison détaillée. */
     rejectedAddons?: { name: string; reason: string }[];
+    /** Fork Alfred : refus d'activer un module réservé au cerveau local, sinon null. */
+    localOnly?(addonId: string): string | null;
     onChanged?(): void;
     requireAdmin(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   },
@@ -265,6 +267,8 @@ export function registerAddons(
     const body = request.body;
     const addon = runtime.get(body.addonId);
     if (!addon) return reply.code(404).send({ error: 'Module inconnu.' });
+    const localOnly = body.enabled === false ? null : services.localOnly?.(body.addonId);
+    if (localOnly) return reply.code(409).send({ error: localOnly });
     if (body.displayEnabled && !addon.ambient)
       return reply.code(400).send({ error: 'Ce module ne propose pas d’affichage permanent.' });
     if (body.profileId && !profiles.get(body.profileId))
@@ -306,6 +310,8 @@ export function registerAddons(
           return reply.code(400).send({ error: validated.message, fields: validated.errors });
       }
       const addon = runtime.get(existing.addonId);
+      const localOnly = patch.enabled ? services.localOnly?.(existing.addonId) : null;
+      if (localOnly) return reply.code(409).send({ error: localOnly });
       if (patch.displayEnabled && !addon?.ambient)
         return reply.code(400).send({ error: 'Ce module ne propose pas d’affichage permanent.' });
       try {

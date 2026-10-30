@@ -4,6 +4,7 @@ import { createMistralMemoryExtractor } from './voice/memory-extractor.js';
 import { createLocalMemoryExtractor } from './voice/local-memory-extractor.js';
 import { LocalAIStore } from './local-ai-store.js';
 import { registerLocalAI } from './local-ai-api.js';
+import { localOnlyRefusal, restrictLocalOnlyTools } from './local-ai-modules.js';
 import { isCardSettings } from '../shared/cards.js';
 import { isLiveVoice } from '../shared/voices.js';
 import { isOrbScale, ORB_SCALE_MAX, ORB_SCALE_MIN } from '../shared/display.js';
@@ -294,6 +295,7 @@ export async function createApp(
   const initialKey = openaiKey();
   // Cerveau local (fork Alfred) : des adresses de serveurs au lieu d’une clé.
   const localVoice = () => preferences.getVoiceProvider() === 'local';
+  restrictLocalOnlyTools(addonRuntime, localVoice);
   const localGateway = () =>
     createVoiceGateway(
       {
@@ -808,6 +810,7 @@ export async function createApp(
     profiles,
     logs,
     rejectedAddons: rejected,
+    localOnly: (addonId) => localOnlyRefusal(addonId, localVoice()),
     requireAdmin,
     onChanged: () => {
       ambient.tick();

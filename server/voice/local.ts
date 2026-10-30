@@ -247,6 +247,19 @@ export function sentenceSplitter() {
   };
 }
 
+/**
+ * Consignes communes adaptées au local : `web_search` est un outil d’OpenAI, absent ici. Le
+ * module SearXNG (searxng__ask) le remplace s’il est actif ; sinon, la promesse est retirée.
+ */
+export function localInstructions(instructions: string, tools: { name: string }[]): string {
+  return tools.some((tool) => tool.name === 'searxng__ask')
+    ? instructions.replaceAll('web_search', 'searxng__ask')
+    : instructions.replace(
+        'rechercher des informations publiques sur le web avec web_search, ',
+        '',
+      );
+}
+
 /** Ajoute l’interrupteur de réflexion au dernier message de la personne, sans toucher l’historique. */
 export function withoutThinking<T extends { role: string; content?: unknown }>(messages: T[]): T[] {
   const last = messages.map((message) => message.role).lastIndexOf('user');
@@ -448,7 +461,7 @@ export function createLocalVoiceAdapter(
             outils: tools.length,
             // Taille de la demande en caractères : un contexte trop petit la tronque ou la refuse.
             taille:
-              config.instructions.length +
+              localInstructions(config.instructions, config.tools).length +
               JSON.stringify(history).length +
               JSON.stringify(tools).length,
           });
@@ -480,7 +493,7 @@ export function createLocalVoiceAdapter(
               {
                 model: settings.llm.model,
                 messages: [
-                  { role: 'system', content: config.instructions },
+                  { role: 'system', content: localInstructions(config.instructions, config.tools) },
                   ...withoutThinking(history),
                 ],
                 ...(tools.length ? { tools, tool_choice: 'auto' as const } : {}),
@@ -766,7 +779,7 @@ export function createLocalVoiceAdapter(
               {
                 model: settings.llm.model,
                 messages: [
-                  { role: 'system', content: config.instructions },
+                  { role: 'system', content: localInstructions(config.instructions, config.tools) },
                   { role: 'user', content: config.welcomeInstructions },
                 ],
                 max_tokens: 100,

@@ -32,10 +32,10 @@ Chaque service a sa propre adresse, on peut donc mélanger :
 ## Limites
 
 - **L'écho.** Comme avec Mistral, le son joué n'est pas retiré par l'annulation d'écho du navigateur. Pour couper Cornelius, il faut parler au moins 0,4 s ; avec un haut-parleur bruyant, désactivez « Couper Cornelius en lui parlant » ou utilisez un micro avec annulation d'écho.
-- **Recherche web.** Non disponible avec ce fournisseur.
+- **Recherche web.** La recherche intégrée d’OpenAI et de Mistral n’existe pas ici. Installez le module externe **Recherche web** (`searxng`, dans [cornelius-modules](https://github.com/lorloop/cornelius-modules/tree/searxng/searxng)) relié à votre instance SearXNG. Ce module ne s’active qu’avec « Local · LocalAI » ; avec un autre fournisseur, son outil est retiré de la conversation, même si une source reste activée.
 - **Qualité des outils.** Elle dépend du modèle : il doit savoir appeler des fonctions (Qwen3 le fait). Vérifiez avec « Cornelius, quelle heure est-il ? ».
 - **Whisper et le silence.** Les phrases inventées typiques (« Sous-titres réalisés par… ») sont ignorées.
 
 ## Fichiers du fork
 
-Le fork modifie peu de fichiers de Cornelius pour rester facile à mettre à jour. Le code propre au cerveau local est dans `server/voice/local*.ts`, `server/local-ai-*.ts`, `shared/local-ai.ts`, `web/components/admin/LocalAISettings.tsx` et `tests/local-voice.test.ts`. Le choix « local » est gardé dans sa propre table SQLite (`local_ai_settings`), créée à la demande et non par une migration, pour ne pas décaler celles de Cornelius.
+Le fork modifie peu de fichiers de Cornelius pour rester facile à mettre à jour. Le code propre au cerveau local est dans `server/voice/local*.ts`, `server/local-ai-*.ts` (dont `local-ai-modules.ts`, la liste des modules réservés au local), `shared/local-ai.ts`, `web/components/admin/LocalAISettings.tsx`, `tests/local-voice.test.ts` et `tests/local-ai-modules.test.ts`. Hors de ces fichiers, le fork touche `server/app.ts` et `server/addons-api.ts` (refus d’activer un module réservé). Le choix « local » est gardé dans sa propre table SQLite (`local_ai_settings`), créée à la demande et non par une migration, pour ne pas décaler celles de Cornelius.
