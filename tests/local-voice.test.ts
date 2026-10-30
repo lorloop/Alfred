@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   LOCAL_FILLERS,
   LOCAL_THINKING_FILLERS,
+  bargeInNoise,
   createLocalVoiceAdapter,
   decodeWav,
   encodeWav,
@@ -656,5 +657,71 @@ test('la réflexion de Qwen est coupée, et une réflexion sans fin est arrêté
   assert.equal(bodies[0]!.messages.at(-1)!.content, 'Quelle heure est-il ? /no_think');
   const failure = logs.find((entry) => entry.message === 'Tour de conversation local en échec');
   assert.match(String(failure?.details?.error), /réflexion/);
+  await connection.close();
+});
+
+test('interruption : hésitations, acquiescements et écho ne coupent pas Cornelius', () => {
+  assert.equal(bargeInNoise('Euh…'), 'hesitation');
+  assert.equal(bargeInNoise('Hmmm, oui, d’accord.'), 'hesitation');
+  assert.equal(bargeInNoise('Ah ouais je vois'), 'hesitation');
+  assert.equal(bargeInNoise('Sous-titres réalisés par Amara.org'), 'bruit');
+  assert.equal(bargeInNoise('il fera beau', 'Demain, il fera beau sur Paris.'), 'echo');
+  assert.equal(bargeInNoise('Non, attends'), null);
+  assert.equal(bargeInNoise('Euh, stop'), null);
+  assert.equal(bargeInNoise('Et à Lyon ?', 'Demain, il fera beau sur Paris.'), null);
+});
+
+/** Cornelius parle 3 s ; on lui parle 1,5 s pendant ce temps, Whisper entend `heard`. */
+async function talkOver(heard: string) {
+  const ai = fakeLocalAI();
+  const transcripts = ['Quelle heure est-il ?', heard, heard];
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.endsWith('/audio/transcriptions')) return Response.json({ text: transcripts.shift() });
+    if (url.endsWith('/audio/speech'))
+      return new Response(new Uint8Array(encodeWav(pcm(3000, true))));
+    if (url.endsWith('/chat/completions'))
+      return sse([delta({ role: 'assistant', content: 'Il est dix heures.' }, 'stop')]);
+    return ai.fetch(input, init);
+  };
+  const events: VoiceEvent[] = [];
+  const logs: { message: string; details?: Record<string, unknown> }[] = [];
+  const connection = await createLocalVoiceAdapter(settings, {
+    fetch,
+    log: (_level, message, details) => logs.push({ message, details }),
+  }).connect({ instructions: '', tools: [], webSearch: false }, (event) => events.push(event));
+  connection.audio(pcm(1000, false));
+  connection.audio(pcm(600, true));
+  connection.audio(pcm(400, false));
+  await waitFor(() => events.some((event) => event.type === 'state' && event.state === 'speaking'));
+  connection.audio(pcm(1500, true));
+  await waitFor(() => logs.some((entry) => entry.message === 'Interruption vérifiée'));
+  connection.audio(pcm(400, false));
+  return { transcripts, events, logs, connection };
+}
+
+test('un « euh » pendant que Cornelius parle ne le coupe pas', async () => {
+  const { transcripts, events, logs, connection } = await talkOver('Euh…');
+  assert.equal(
+    logs.find((entry) => entry.message === 'Interruption vérifiée')?.details?.raison,
+    'hesitation',
+  );
+  await waitFor(() => events.some((event) => event.type === 'turn_completed'), 5000);
+  assert.equal(
+    events.some((event) => event.type === 'interrupted'),
+    false,
+  );
+  // Seul le début de l’hésitation est parti à la transcription, pas de nouvelle question.
+  assert.equal(transcripts.length, 1);
+  assert.equal(events.filter((event) => event.type === 'user_transcript').length, 1);
+  await connection.close();
+});
+
+test('une vraie parole pendant que Cornelius parle le coupe et devient la question', async () => {
+  const { events, connection } = await talkOver('Non, attends, plutôt la météo.');
+  assert.ok(events.some((event) => event.type === 'interrupted'));
+  await waitFor(() => events.filter((event) => event.type === 'user_transcript').length === 2);
+  const last = events.filter((event) => event.type === 'user_transcript').at(-1);
+  assert.equal(last?.type === 'user_transcript' && last.text, 'Non, attends, plutôt la météo.');
   await connection.close();
 });

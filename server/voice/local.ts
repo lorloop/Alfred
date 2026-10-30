@@ -22,6 +22,9 @@ const SPEECH_RUN_FRAMES = 3;
 const MAX_UTTERANCE_MS = 30_000;
 /** Parole continue nécessaire pour couper Cornelius pendant qu’il parle (écho du haut-parleur). */
 const BARGE_IN_MS = 400;
+/** Son transcrit pour vérifier une interruption : assez pour « attends » ou « non, stop ». */
+const BARGE_IN_SAMPLE_MS = 1_200;
+const BARGE_IN_CHECK_TIMEOUT_MS = 5_000;
 /** Avance maximale du son envoyé sur la lecture réelle : coupure rapide en cas d’interruption. */
 const PLAYBACK_LEAD_MS = 400;
 const PLAYBACK_FRAME_MS = 100;
@@ -68,6 +71,36 @@ const HALLUCINATIONS = [
 export function isLikelyHallucination(text: string): boolean {
   const value = text.trim();
   return !value || value.length < 2 || HALLUCINATIONS.some((pattern) => pattern.test(value));
+}
+
+/** Hésitations et acquiescements : dits pendant que Cornelius parle, ils ne le coupent pas. */
+const HESITATIONS = new Set(
+  (
+    'euh heu hum hm hmm mh mmh mm ah aha oh eh ha hein bah ben bon oui ouais ok okay ' +
+    'd accord daccord voila je vois super cool'
+  ).split(' '),
+);
+const words = (text: string) =>
+  text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    // « euuuh », « hmmmm » : les lettres tenues comptent une fois.
+    .replace(/([a-z])\1{2,}/g, '$1')
+    .match(/[a-z0-9]+/g) ?? [];
+
+/**
+ * Pourquoi une parole entendue pendant que Cornelius répond ne doit pas le couper : bruit,
+ * hésitation (« euh… », « oui, d’accord »), ou écho de ce qu’il vient de dire. `null` : il se tait.
+ */
+export function bargeInNoise(text: string, spoken = ''): 'bruit' | 'hesitation' | 'echo' | null {
+  const heard = words(text);
+  if (isLikelyHallucination(text) || !heard.length) return 'bruit';
+  if (heard.every((word) => HESITATIONS.has(word))) return 'hesitation';
+  const said = new Set(words(spoken));
+  if (heard.length >= 2 && heard.filter((word) => said.has(word)).length / heard.length >= 0.7)
+    return 'echo';
+  return null;
 }
 
 export function encodeWav(pcm: Buffer, sampleRate = LOCAL_SAMPLE_RATE): Buffer {
@@ -345,6 +378,8 @@ export function createLocalVoiceAdapter(
       // Tour de rôle des phrases d’attente, pour ne pas répéter la même à chaque question.
       let fillerIndex = Math.floor(Math.random() * LOCAL_FILLERS.length);
       let thinkingFillerIndex = Math.floor(Math.random() * LOCAL_THINKING_FILLERS.length);
+      /** Phrases dites pendant ce tour : leur écho dans le micro ne doit pas couper Cornelius. */
+      let recentSpeech: string[] = [];
       let state: 'listening' | 'thinking' | 'speaking' = 'listening';
       const notify = (event: VoiceEvent) => {
         if (!closed) emit(event);
@@ -440,10 +475,12 @@ export function createLocalVoiceAdapter(
       /** Synthèse dans l’ordre des phrases, la suivante calculée pendant que la précédente joue. */
       const speaker = (signal: AbortSignal) => {
         let chain = Promise.resolve();
+        recentSpeech = [];
         return {
           say(text: string) {
             const clean = speakable(text);
             if (!clean) return;
+            recentSpeech.push(clean);
             const audio = synthesize(settings.tts, clean, { ...http, signal });
             audio.catch(() => {});
             chain = chain.then(async () => {
@@ -716,6 +753,42 @@ export function createLocalVoiceAdapter(
       let peak = 0;
       let framesSeen = 0;
       let lastLevelLog = now();
+      /** Parole entendue pendant que Cornelius parle, en attente du verdict de la transcription. */
+      let bargeIn: { frames: Buffer[]; start: number; sent: boolean } | null = null;
+      const startUtterance = (frames: Buffer[], start: number) => {
+        utterance = frames;
+        utteranceStart = start;
+        voicedMs = BARGE_IN_MS;
+        silenceMs = 0;
+        voicedRun = SPEECH_RUN_FRAMES;
+      };
+      /**
+       * Une hésitation, un « oui » d’acquiescement ou l’écho de Cornelius ne le coupent pas :
+       * le début de la phrase part à la transcription, et seule une vraie parole l’interrompt.
+       */
+      const checkBargeIn = (candidate: NonNullable<typeof bargeIn>) => {
+        candidate.sent = true;
+        const checkStarted = now();
+        void transcribe(settings.stt, Buffer.concat(candidate.frames), {
+          ...http,
+          signal: AbortSignal.timeout(BARGE_IN_CHECK_TIMEOUT_MS),
+        })
+          // Transcription en échec : on coupe, comme sans vérification.
+          .catch(() => null)
+          .then((text) => {
+            if (bargeIn !== candidate || closed) return;
+            bargeIn = null;
+            const ignored = text === null ? null : bargeInNoise(text, recentSpeech.join(' '));
+            log('info', 'Interruption vérifiée', {
+              coupe: !ignored,
+              ...(ignored ? { raison: ignored } : {}),
+              verificationMs: now() - checkStarted,
+            });
+            if (ignored) return;
+            interrupt();
+            startUtterance(candidate.frames, candidate.start);
+          });
+      };
       const analyse = (frame: Buffer) => {
         const level = rms(frame);
         // Bruit de fond : suit vite une baisse, lentement une hausse (une phrase ne le relève pas).
@@ -743,14 +816,32 @@ export function createLocalVoiceAdapter(
         // bruit de la pièce, la moindre rumeur effaçait la réponse avant qu’elle soit dite.
         if (turn) {
           loudMs = voiced ? loudMs + 20 : 0;
-          const needed = state === 'speaking' && settings.bargeIn ? BARGE_IN_MS : Infinity;
-          if (loudMs < needed) {
-            preRoll.push(frame);
-            while (preRoll.length > PRE_ROLL_MS / 20) preRoll.shift();
+          // Interruption en vérification : Cornelius continue de parler, le son est gardé.
+          if (bargeIn) {
+            bargeIn.frames.push(frame);
+            if (!bargeIn.sent && bargeIn.frames.length * 20 >= BARGE_IN_SAMPLE_MS)
+              checkBargeIn(bargeIn);
             return;
           }
-          interrupt();
+          const needed = state === 'speaking' && settings.bargeIn ? BARGE_IN_MS : Infinity;
+          // Le tampon garde aussi les 400 ms de parole qui déclenchent la vérification.
+          preRoll.push(frame);
+          while (preRoll.length > (PRE_ROLL_MS + BARGE_IN_MS) / 20) preRoll.shift();
+          if (loudMs < needed) return;
+          bargeIn = {
+            frames: [...preRoll],
+            start: now() - started - preRoll.length * 20,
+            sent: false,
+          };
+          preRoll.length = 0;
           loudMs = 0;
+          return;
+        }
+        // Cornelius a fini de parler avant le verdict : c’est le début d’une nouvelle phrase.
+        if (bargeIn) {
+          const candidate = bargeIn;
+          bargeIn = null;
+          startUtterance(candidate.frames, candidate.start);
         }
         if (!utterance) {
           preRoll.push(frame);
@@ -791,6 +882,7 @@ export function createLocalVoiceAdapter(
         if (closed) return;
         turn?.abort();
         turn = null;
+        bargeIn = null;
         stopPlayback();
         resolvePending('Session clôturée.');
         clearInterval(clock);
