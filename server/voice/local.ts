@@ -26,6 +26,13 @@ const HISTORY_LIMIT = 40;
 const GREETING_TIMEOUT_MS = 4_000;
 /** Délai pour le premier morceau de réponse du LLM : chargement du modèle, file d’attente… */
 const LLM_FIRST_CHUNK_MS = 45_000;
+/** Durée maximale d’une étape du LLM : au-delà, il réfléchit en boucle au lieu de répondre. */
+const LLM_STEP_MS = 40_000;
+/**
+ * Interrupteur de Qwen3 pour couper sa réflexion, lu dans le dernier message de la personne.
+ * Il complète chat_template_kwargs, que LocalAI ignore selon le gabarit du modèle.
+ */
+const NO_THINK_SWITCH = ' /no_think';
 const SESSION_MAX_MS = 15 * 60_000;
 
 /** Phrases d’attente, dites quand le LLM lance un outil sans avoir encore rien dit. */
@@ -240,6 +247,16 @@ export function sentenceSplitter() {
   };
 }
 
+/** Ajoute l’interrupteur de réflexion au dernier message de la personne, sans toucher l’historique. */
+export function withoutThinking<T extends { role: string; content?: unknown }>(messages: T[]): T[] {
+  const last = messages.map((message) => message.role).lastIndexOf('user');
+  return messages.map((message, index) =>
+    index === last && typeof message.content === 'string'
+      ? { ...message, content: message.content + NO_THINK_SWITCH }
+      : message,
+  );
+}
+
 /** Texte prêt à dire : sans Markdown ni liens bruts, que la synthèse lirait mot à mot. */
 export function speakable(text: string): string {
   return text
@@ -259,6 +276,8 @@ export interface LocalVoiceOptions {
   now?: () => number;
   /** Délai du premier morceau de réponse du LLM ; 45 s par défaut. */
   firstChunkTimeoutMs?: number;
+  /** Durée maximale d’une étape du LLM ; 40 s par défaut. */
+  stepTimeoutMs?: number;
   /** Horloge de lecture, remplaçable dans les tests. */
   setInterval?: typeof globalThis.setInterval;
 }
@@ -277,6 +296,7 @@ export function createLocalVoiceAdapter(
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => {});
   const firstChunkTimeout = options.firstChunkTimeoutMs ?? LLM_FIRST_CHUNK_MS;
+  const stepTimeout = options.stepTimeoutMs ?? LLM_STEP_MS;
   const http = { apiKey: options.apiKey, fetch: options.fetch };
   return {
     async connect(configuration, emit) {
@@ -442,6 +462,13 @@ export function createLocalVoiceAdapter(
             request.abort();
           }, firstChunkTimeout);
           watchdog.unref?.();
+          let overrun = false;
+          const deadline = setTimeout(() => {
+            overrun = true;
+            request.abort();
+          }, stepTimeout);
+          deadline.unref?.();
+          let reasoning = 0;
           const requested = now();
           const splitter = sentenceSplitter();
           const calls = new Map<number, ToolCall>();
@@ -452,7 +479,10 @@ export function createLocalVoiceAdapter(
             const stream = await client.chat.completions.create(
               {
                 model: settings.llm.model,
-                messages: [{ role: 'system', content: config.instructions }, ...history],
+                messages: [
+                  { role: 'system', content: config.instructions },
+                  ...withoutThinking(history),
+                ],
                 ...(tools.length ? { tools, tool_choice: 'auto' as const } : {}),
                 stream: true,
                 ...NO_THINKING,
@@ -467,6 +497,10 @@ export function createLocalVoiceAdapter(
               }
               const delta = chunk.choices[0]?.delta;
               if (!delta) continue;
+              // LocalAI renvoie la réflexion à part : jamais dite, mais comptée pour le journal.
+              const extra = delta as { reasoning_content?: unknown; reasoning?: unknown };
+              const thought = extra.reasoning_content ?? extra.reasoning;
+              if (typeof thought === 'string') reasoning += thought.length;
               for (const call of delta.tool_calls ?? []) {
                 const current = calls.get(call.index) ?? { id: '', name: '', arguments: '' };
                 if (call.id) current.id = call.id;
@@ -486,7 +520,13 @@ export function createLocalVoiceAdapter(
               }
               for (const sentence of splitter.push(text)) voice.say(sentence);
             }
+            // Le client OpenAI termine le flux sans erreur quand on l’abandonne : le signaler.
+            if (overrun || stalled) throw new Error('Étape du LLM abandonnée.');
           } catch (error) {
+            if (overrun)
+              throw new Error(
+                `LLM toujours en train d’écrire après ${stepTimeout / 1000} s (${reasoning} caractères de réflexion) : désactivez la réflexion du modèle dans LocalAI.`,
+              );
             if (stalled)
               throw new Error(
                 `LLM sans réponse après ${firstChunkTimeout / 1000} s : modèle en chargement, file d’attente (Hermes ?) ou contexte trop long.`,
@@ -494,6 +534,7 @@ export function createLocalVoiceAdapter(
             throw error;
           } finally {
             clearTimeout(watchdog);
+            clearTimeout(deadline);
             signal.removeEventListener('abort', relay);
           }
           const said = stripReasoning(content);
@@ -503,6 +544,7 @@ export function createLocalVoiceAdapter(
             etape: round + 1,
             dureeMs: now() - requested,
             brut: content.length,
+            reflexion: reasoning,
             outils: [...calls.values()].map((call) => call.name),
           });
           if (!calls.size) {

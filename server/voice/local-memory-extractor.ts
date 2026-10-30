@@ -23,7 +23,8 @@ export function createLocalMemoryExtractor(
         model: service.model,
         messages: [
           { role: 'system', content: memoryExtractionInstructions },
-          { role: 'user', content: JSON.stringify(input) },
+          // « /no_think » : Qwen3 coupe sa réflexion, que LocalAI peut laisser active.
+          { role: 'user', content: JSON.stringify(input) + ' /no_think' },
         ],
         response_format: {
           type: 'json_schema',

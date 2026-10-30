@@ -532,3 +532,45 @@ test('le premier morceau part dès une virgule, les suivants à la fin de phrase
   ]);
   assert.deepEqual(splitter.flush(), ['Prends']);
 });
+
+test('la réflexion de Qwen est coupée, et une réflexion sans fin est arrêtée', async () => {
+  const ai = fakeLocalAI();
+  const bodies: { messages: { role: string; content: unknown }[] }[] = [];
+  // Le LLM ne fait que « réfléchir », morceau après morceau, sans jamais répondre.
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (!url.endsWith('/chat/completions')) return ai.fetch(input, init);
+    bodies.push(JSON.parse(String(init?.body)));
+    const encoder = new TextEncoder();
+    let timer: ReturnType<typeof setInterval>;
+    const body = new ReadableStream({
+      start(controller) {
+        timer = setInterval(() => {
+          const chunk = delta({ reasoning_content: 'Voyons… ' });
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        }, 20);
+        init?.signal?.addEventListener('abort', () => {
+          clearInterval(timer);
+          controller.error(new DOMException('abandon', 'AbortError'));
+        });
+      },
+      cancel: () => clearInterval(timer),
+    });
+    return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const events: VoiceEvent[] = [];
+  const logs: { message: string; details?: Record<string, unknown> }[] = [];
+  const connection = await createLocalVoiceAdapter(settings, {
+    fetch,
+    stepTimeoutMs: 300,
+    log: (_level, message, details) => logs.push({ message, details }),
+  }).connect({ instructions: '', tools: [], webSearch: false }, (event) => events.push(event));
+  connection.audio(pcm(1000, false));
+  connection.audio(pcm(600, true));
+  connection.audio(pcm(400, false));
+  await waitFor(() => events.some((event) => event.type === 'turn_completed'));
+  assert.equal(bodies[0]!.messages.at(-1)!.content, 'Quelle heure est-il ? /no_think');
+  const failure = logs.find((entry) => entry.message === 'Tour de conversation local en échec');
+  assert.match(String(failure?.details?.error), /réflexion/);
+  await connection.close();
+});
