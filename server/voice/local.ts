@@ -28,6 +28,18 @@ const GREETING_TIMEOUT_MS = 4_000;
 const LLM_FIRST_CHUNK_MS = 45_000;
 const SESSION_MAX_MS = 15 * 60_000;
 
+/** Phrases d’attente, dites quand le LLM lance un outil sans avoir encore rien dit. */
+export const LOCAL_FILLERS = [
+  'Je regarde ça.',
+  'Un instant.',
+  'Je m’en occupe.',
+  'Je vérifie.',
+  'Une seconde.',
+];
+export const LOCAL_FILLER_LONG = 'Encore un petit instant.';
+/** Outil plus long que ce délai : une seconde phrase d’attente, une seule fois par tour. */
+const FILLER_LONG_TOOL_MS = 6_000;
+
 /** Phrases que Whisper invente sur du bruit ou du silence, surtout en français. */
 const HALLUCINATIONS = [
   /sous-titr/i,
@@ -274,6 +286,8 @@ export function createLocalVoiceAdapter(
       const history: ChatMessage[] = [];
       const pending = new Map<string, { resolve(value: string): void; timer: NodeJS.Timeout }>();
       let turn: AbortController | null = null;
+      // Tour de rôle des phrases d’attente, pour ne pas répéter la même à chaque question.
+      let fillerIndex = Math.floor(Math.random() * LOCAL_FILLERS.length);
       let state: 'listening' | 'thinking' | 'speaking' = 'listening';
       const notify = (event: VoiceEvent) => {
         if (!closed) emit(event);
@@ -394,6 +408,8 @@ export function createLocalVoiceAdapter(
 
       async function respond(signal: AbortSignal, voice: ReturnType<typeof speaker>) {
         let spoken = '';
+        let filled = false;
+        let reminded = false;
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
           const tools = config.tools.length && round < MAX_TOOL_ROUNDS ? toolDefinitions() : [];
           log('info', 'Appel au LLM', {
@@ -471,6 +487,14 @@ export function createLocalVoiceAdapter(
             signal.removeEventListener('abort', relay);
           }
           const said = stripReasoning(content);
+          // Temps d’écriture du LLM, à distinguer du temps des outils : un long texte « brut »
+          // sans rien à dire trahit un raisonnement que le modèle n’aurait pas dû produire.
+          log('info', 'Étape du LLM terminée', {
+            etape: round + 1,
+            dureeMs: now() - requested,
+            brut: content.length,
+            outils: [...calls.values()].map((call) => call.name),
+          });
           if (!calls.size) {
             for (const sentence of splitter.flush()) voice.say(sentence);
             if (said) history.push({ role: 'assistant', content: said });
@@ -484,6 +508,11 @@ export function createLocalVoiceAdapter(
           }
           // Une phrase d’attente (« Je regarde… ») reste prononcée avant les outils.
           for (const sentence of splitter.flush()) voice.say(sentence);
+          // Rien dit avant l’outil : une courte phrase montre que Cornelius travaille.
+          if (settings.fillers !== false && !filled && !spoken && !said) {
+            voice.say(LOCAL_FILLERS[fillerIndex++ % LOCAL_FILLERS.length]!);
+            filled = true;
+          }
           spoken = (spoken + ' ' + said).trim();
           const toolCalls = [...calls.values()].map((call) => ({
             ...call,
@@ -499,8 +528,17 @@ export function createLocalVoiceAdapter(
             })),
           });
           for (const call of toolCalls) {
-            const output = await callTool(call, signal);
+            const toolStarted = now();
+            const reminder =
+              settings.fillers !== false && !reminded
+                ? setTimeout(() => {
+                    reminded = true;
+                    voice.say(LOCAL_FILLER_LONG);
+                  }, FILLER_LONG_TOOL_MS)
+                : undefined;
+            const output = await callTool(call, signal).finally(() => clearTimeout(reminder));
             if (signal.aborted) return spoken;
+            log('info', 'Outil exécuté', { nom: call.name, dureeMs: now() - toolStarted });
             history.push({ role: 'tool', tool_call_id: call.id, content: output });
           }
         }

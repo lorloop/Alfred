@@ -149,6 +149,14 @@ export function LocalAISettings({ run }: { run: RunAction }) {
               onCheckedChange={(bargeIn) => setDraft({ ...draft, bargeIn })}
             />
           </div>
+          <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+            <Label htmlFor="local-ai-fillers">Phrases d’attente pendant les recherches</Label>
+            <Switch
+              id="local-ai-fillers"
+              checked={draft.fillers}
+              onCheckedChange={(fillers) => setDraft({ ...draft, fillers })}
+            />
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button

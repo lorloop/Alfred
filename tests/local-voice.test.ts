@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  LOCAL_FILLERS,
   createLocalVoiceAdapter,
   decodeWav,
   encodeWav,
@@ -23,6 +24,7 @@ const settings: LocalAISettings = {
   memory: { baseUrl: '', model: '' },
   silenceMs: 300,
   bargeIn: true,
+  fillers: true,
 };
 
 /** Son de 16 kHz : silence ou la-440 Hz, en millisecondes. */
@@ -218,7 +220,9 @@ test('un tour complet : parole, transcription, outil, réponse parlée', async (
   const spoken = ai.calls
     .filter((item) => item.url.endsWith('/audio/speech'))
     .map((item) => (item.body as { input: string }).input);
-  assert.deepEqual(spoken, ['Il est dix heures.', 'Bonne journée !']);
+  // Une phrase d’attente pendant l’outil, puis la réponse.
+  assert.ok(LOCAL_FILLERS.includes(spoken[0]!));
+  assert.deepEqual(spoken.slice(1), ['Il est dix heures.', 'Bonne journée !']);
 
   await connection.close();
   assert.equal(events.at(-1)?.type, 'closed');
@@ -486,5 +490,33 @@ test('des pics de bruit seuls ne partent pas à la transcription', async () => {
     ai.calls.some((call) => call.url.endsWith('/audio/transcriptions')),
     false,
   );
+  await connection.close();
+});
+
+test('phrases d’attente désactivables dans l’administration', async () => {
+  const ai = fakeLocalAI();
+  const events: VoiceEvent[] = [];
+  const connection = await createLocalVoiceAdapter(
+    { ...settings, fillers: false },
+    { fetch: ai.fetch },
+  ).connect(
+    {
+      instructions: '',
+      tools: [{ name: 'clock__now', description: 'Heure', parameters: { type: 'object' } }],
+      webSearch: false,
+    },
+    (event) => events.push(event),
+  );
+  connection.audio(pcm(1000, false));
+  connection.audio(pcm(600, true));
+  connection.audio(pcm(400, false));
+  await waitFor(() => events.some((event) => event.type === 'tool_call'));
+  const call = events.find((event) => event.type === 'tool_call');
+  connection.result(call?.type === 'tool_call' ? call.id : '', '{}');
+  await waitFor(() => events.some((event) => event.type === 'turn_completed'));
+  const spoken = ai.calls
+    .filter((item) => item.url.endsWith('/audio/speech'))
+    .map((item) => (item.body as { input: string }).input);
+  assert.deepEqual(spoken, ['Il est dix heures.', 'Bonne journée !']);
   await connection.close();
 });

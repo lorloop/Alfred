@@ -50,6 +50,7 @@ export function defaultLocalAISettings(env: NodeJS.ProcessEnv = process.env): Lo
     memory: { baseUrl: env.LOCALAI_MEMORY_BASE_URL || base, model: env.LOCALAI_MEMORY_MODEL || '' },
     silenceMs: 700,
     bargeIn: true,
+    fillers: true,
   };
 }
 
@@ -68,7 +69,9 @@ export class LocalAIStore {
     if (typeof raw !== 'string') return defaults;
     try {
       const stored: unknown = JSON.parse(raw);
-      return localAISettingsError(stored) ? defaults : (stored as LocalAISettings);
+      return localAISettingsError(stored)
+        ? defaults
+        : normalizeLocalAISettings(stored as LocalAISettings);
     } catch {
       return defaults;
     }

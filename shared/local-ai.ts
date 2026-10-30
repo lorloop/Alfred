@@ -17,6 +17,8 @@ export interface LocalAISettings {
   silenceMs: number;
   /** Couper Cornelius en lui parlant pendant qu’il répond. */
   bargeIn: boolean;
+  /** Phrases d’attente (« Je regarde ça. ») pendant que les outils travaillent. */
+  fillers: boolean;
 }
 export interface LocalAITestResult {
   service: LocalAIServiceName;
@@ -92,6 +94,9 @@ export function localAISettingsError(value: unknown): string | null {
   )
     return `Silence de fin de phrase entre ${LOCAL_AI_SILENCE_MIN_MS} et ${LOCAL_AI_SILENCE_MAX_MS} ms.`;
   if (typeof input.bargeIn !== 'boolean') return 'Réglage d’interruption invalide.';
+  // Absent des réglages enregistrés avant son ajout : activé par défaut.
+  if (input.fillers !== undefined && typeof input.fillers !== 'boolean')
+    return 'Réglage des phrases d’attente invalide.';
   return null;
 }
 
@@ -117,5 +122,6 @@ export function normalizeLocalAISettings(value: LocalAISettings): LocalAISetting
     memory: service({ baseUrl: value.memory.baseUrl, model: value.memory.model }),
     silenceMs: value.silenceMs,
     bargeIn: value.bargeIn,
+    fillers: value.fillers ?? true,
   };
 }
