@@ -733,3 +733,38 @@ test('une voix atténuée et hachée par l’annulation d’écho coupe quand m�
   assert.ok(events.some((event) => event.type === 'interrupted'));
   await connection.close();
 });
+
+test('après la phrase d’attente, le bruit pendant que le LLM travaille ne coupe pas Cornelius', async () => {
+  const ai = fakeLocalAI();
+  const events: VoiceEvent[] = [];
+  const logs: string[] = [];
+  const connection = await createLocalVoiceAdapter(settings, {
+    fetch: ai.fetch,
+    log: (_level, message) => logs.push(message),
+  }).connect(
+    {
+      instructions: '',
+      tools: [{ name: 'clock__now', description: 'Heure', parameters: { type: 'object' } }],
+      webSearch: false,
+    },
+    (event) => events.push(event),
+  );
+  connection.audio(pcm(1000, false));
+  connection.audio(pcm(600, true));
+  connection.audio(pcm(400, false));
+  await waitFor(() => events.some((event) => event.type === 'tool_call'));
+  // La phrase d’attente (200 ms) est jouée ; l’outil travaille encore, état « speaking ».
+  await waitFor(() => events.some((event) => event.type === 'state' && event.state === 'speaking'));
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  connection.audio(pcm(1500, true));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(logs.includes('Interruption vérifiée'), false);
+  const call = events.find((event) => event.type === 'tool_call');
+  connection.result(call?.type === 'tool_call' ? call.id : '', '{}');
+  await waitFor(() => events.some((event) => event.type === 'turn_completed'));
+  assert.equal(
+    events.some((event) => event.type === 'interrupted'),
+    false,
+  );
+  await connection.close();
+});

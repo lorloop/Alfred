@@ -789,6 +789,7 @@ export function createLocalVoiceAdapter(
             const ignored = text === null ? null : bargeInNoise(text, recentSpeech.join(' '));
             log('info', 'Interruption vérifiée', {
               coupe: !ignored,
+              caracteres: text?.length ?? null,
               ...(ignored ? { raison: ignored } : {}),
               verificationMs: now() - checkStarted,
             });
@@ -827,7 +828,10 @@ export function createLocalVoiceAdapter(
         // Avant qu’il parle, rien n’annule la question en cours : avec un micro qui capte le
         // bruit de la pièce, la moindre rumeur effaçait la réponse avant qu’elle soit dite.
         if (turn) {
-          const listening = state === 'speaking' && settings.bargeIn;
+          // Seulement quand un son joue vraiment : après une phrase d’attente, l’état reste
+          // « speaking » pendant que le LLM réfléchit, et le bruit de la pièce suffisait à le couper.
+          const audible = playback.length > 0 || playbackAhead > 0;
+          const listening = state === 'speaking' && settings.bargeIn && audible;
           const heard = listening ? level > Math.max(BARGE_IN_FLOOR, noise * 3) : voiced;
           // Une parole hachée par l’annulation d’écho compte quand même : un blanc retire moins
           // qu’une trame de parole n’ajoute, au lieu de tout remettre à zéro.
