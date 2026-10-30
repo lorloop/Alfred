@@ -8,7 +8,7 @@ Comme avec Mistral, le son du micro passe par le serveur Cornelius (PCM 16 kHz).
 
 1. **Écoute.** Cornelius détecte la parole au niveau sonore et considère la phrase finie après un silence réglable (700 ms par défaut).
 2. **Transcription.** La phrase part en WAV vers le service d'écoute (Whisper…).
-3. **Réponse.** Le LLM (Qwen3.6…) reçoit la conversation et les mêmes outils que GPT-Live : modules, Home Assistant, agents Hermes, cartes, mémoire, e-mail. Les outils restent exécutés par Cornelius, avec les mêmes autorisations. Le mode « réflexion » de Qwen3 est désactivé pour répondre vite.
+3. **Réponse.** Le LLM (Qwen3.6…) reçoit la conversation et les mêmes outils que GPT-Live : modules, Home Assistant, agents Hermes, cartes, mémoire, e-mail. Les outils restent exécutés par Cornelius, avec les mêmes autorisations. Par défaut, la réflexion du modèle est coupée pour répondre vite (voir « Réflexion du LLM » plus bas).
 4. **Voix.** Chaque phrase de la réponse est synthétisée dès qu'elle est complète : la suivante se calcule pendant que la première est jouée.
 
 Après la conversation, les souvenirs sont extraits par le service « Mémoire » (le LLM par défaut).
@@ -17,6 +17,17 @@ Après la conversation, les souvenirs sont extraits par le service « Mémoire �
 
 1. **Voix de Cornelius → Fournisseur de la conversation : « Local · LocalAI ».** Le choix est refusé tant que le LLM, l'écoute et la voix n'ont pas d'adresse et de modèle.
 2. **Carte « Cerveau local »** : une adresse et un modèle par service. **Tester** essaie chaque service avec les valeurs saisies, sans les enregistrer ; **Enregistrer** compte à la conversation suivante.
+
+### Réflexion du LLM
+
+Le réglage **Réflexion du LLM** de la carte « Cerveau local » choisit l’effort demandé au modèle (`reasoning_effort`) :
+
+| Choix | Effet |
+|---|---|
+| Désactivée (par défaut) | Réponse en 1 à 3 s. Le modèle peut répondre de mémoire au lieu d’appeler un outil, ou dire à tort qu’il ne peut pas vérifier (« l’état de la lumière »). |
+| Légère, Moyenne, Approfondie | Le modèle réfléchit avant de répondre : il choisit mieux ses outils et se trompe moins en calcul, mais répond plusieurs secondes plus tard. Selon le modèle, les trois niveaux peuvent se valoir (Qwen3 réfléchit ou non). |
+
+L’accueil et l’extraction des souvenirs restent toujours sans réflexion. Si une réponse dépasse 40 s, le journal l’indique : baissez alors la réflexion.
 
 Les valeurs de départ peuvent venir de `.env` (`LOCALAI_*`, voir `.env.example`).
 

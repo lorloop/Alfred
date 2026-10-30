@@ -25,6 +25,7 @@ const settings: LocalAISettings = {
   silenceMs: 300,
   bargeIn: true,
   fillers: true,
+  reasoning: 'none',
 };
 
 /** Son de 16 kHz : silence ou la-440 Hz, en millisecondes. */
@@ -153,6 +154,12 @@ test('réglages : validation, valeurs de .env, choix « local » persistant', ()
   assert.equal(store.ready(), false);
   store.set(settings);
   assert.equal(new LocalAIStore(db, {}).get().llm.model, 'qwen3.6-35b');
+  // Réflexion : niveau connu seulement ; absente des anciens réglages, elle reste coupée.
+  assert.equal(localAISettingsError({ ...settings, reasoning: 'medium' }), null);
+  assert.match(String(localAISettingsError({ ...settings, reasoning: 'max' })), /réflexion/);
+  const { reasoning: _absent, ...previous } = settings;
+  store.set(previous as typeof settings);
+  assert.equal(new LocalAIStore(db, {}).get().reasoning, 'none');
   const preferences = new SessionPreferences(db);
   preferences.setVoiceProvider('mistral');
   preferences.setVoiceProvider('local');
@@ -520,6 +527,29 @@ test('phrases d’attente désactivables dans l’administration', async () => {
     .filter((item) => item.url.endsWith('/audio/speech'))
     .map((item) => (item.body as { input: string }).input);
   assert.deepEqual(spoken, ['Il est dix heures.', 'Bonne journée !']);
+  await connection.close();
+});
+
+test('réflexion choisie dans l’administration : effort transmis, sans /no_think', async () => {
+  const ai = fakeLocalAI();
+  const events: VoiceEvent[] = [];
+  const connection = await createLocalVoiceAdapter(
+    { ...settings, reasoning: 'medium' },
+    { fetch: ai.fetch },
+  ).connect({ instructions: '', tools: [], webSearch: false }, (event) => events.push(event));
+  connection.audio(pcm(1000, false));
+  connection.audio(pcm(600, true));
+  connection.audio(pcm(400, false));
+  // Le premier appel au LLM suffit : seule la requête est vérifiée ici.
+  await waitFor(() => ai.calls.some((item) => item.url.endsWith('/chat/completions')));
+  const chat = ai.calls.find((item) => item.url.endsWith('/chat/completions'))!.body as {
+    reasoning_effort: string;
+    chat_template_kwargs: { enable_thinking: boolean };
+    messages: { role: string; content: string }[];
+  };
+  assert.equal(chat.reasoning_effort, 'medium');
+  assert.equal(chat.chat_template_kwargs.enable_thinking, true);
+  assert.doesNotMatch(chat.messages.at(-1)!.content, /no_think/);
   await connection.close();
 });
 

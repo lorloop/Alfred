@@ -51,6 +51,7 @@ export function defaultLocalAISettings(env: NodeJS.ProcessEnv = process.env): Lo
     silenceMs: 700,
     bargeIn: true,
     fillers: true,
+    reasoning: 'none',
   };
 }
 

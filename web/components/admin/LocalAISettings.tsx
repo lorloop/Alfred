@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  LOCAL_AI_REASONING,
   LOCAL_AI_SILENCE_MAX_MS,
   LOCAL_AI_SILENCE_MIN_MS,
+  localAIReasoningLabel,
   localAIServiceLabel,
+  type LocalAIReasoning,
   type LocalAIServiceName,
   type LocalAISettings,
   type LocalAITestResult,
@@ -14,6 +17,7 @@ import { Button } from '../ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
+import { NativeSelect, NativeSelectOption } from '../ui/native-select';
 import { Switch } from '../ui/switch';
 import { Field, LoadingCard } from './shared';
 import type { RunAction } from './types';
@@ -140,6 +144,25 @@ export function LocalAISettings({ run }: { run: RunAction }) {
               value={draft.silenceMs}
               onChange={(event) => setDraft({ ...draft, silenceMs: Number(event.target.value) })}
             />
+          </Field>
+          <Field
+            id="local-ai-reasoning"
+            label="Réflexion du LLM"
+            help="Avec réflexion, le modèle choisit mieux ses outils et se trompe moins, mais répond plusieurs secondes plus tard. Selon le modèle, les niveaux peuvent se valoir."
+          >
+            <NativeSelect
+              id="local-ai-reasoning"
+              value={draft.reasoning}
+              onChange={(event) =>
+                setDraft({ ...draft, reasoning: event.target.value as LocalAIReasoning })
+              }
+            >
+              {LOCAL_AI_REASONING.map((effort) => (
+                <NativeSelectOption key={effort} value={effort}>
+                  {localAIReasoningLabel(effort)}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
           </Field>
           <div className="flex items-center justify-between gap-4 rounded-md border p-3">
             <Label htmlFor="local-ai-barge-in">Couper Cornelius en lui parlant</Label>

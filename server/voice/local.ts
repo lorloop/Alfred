@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type OpenAI from 'openai';
 import type { LocalAISettings, LocalAIService } from '../../shared/local-ai.js';
-import { apiBase, localClient, NO_THINKING, stripReasoning } from './local-client.js';
+import {
+  apiBase,
+  localClient,
+  NO_THINKING,
+  reasoningOptions,
+  stripReasoning,
+} from './local-client.js';
 import type { VoiceConfiguration, VoiceEvent, VoiceProviderAdapter } from './provider.js';
 
 /** PCM au bord de Cornelius : mono PCM16, 16 kHz. */
@@ -494,11 +500,12 @@ export function createLocalVoiceAdapter(
                 model: settings.llm.model,
                 messages: [
                   { role: 'system', content: localInstructions(config.instructions, config.tools) },
-                  ...withoutThinking(history),
+                  // Réflexion choisie dans « Cerveau local » ; /no_think seulement si coupée.
+                  ...(settings.reasoning === 'none' ? withoutThinking(history) : history),
                 ],
                 ...(tools.length ? { tools, tool_choice: 'auto' as const } : {}),
                 stream: true,
-                ...NO_THINKING,
+                ...reasoningOptions(settings.reasoning),
               },
               { signal: request.signal },
             );
@@ -538,7 +545,7 @@ export function createLocalVoiceAdapter(
           } catch (error) {
             if (overrun)
               throw new Error(
-                `LLM toujours en train d’écrire après ${stepTimeout / 1000} s (${reasoning} caractères de réflexion) : désactivez la réflexion du modèle dans LocalAI.`,
+                `LLM toujours en train d’écrire après ${stepTimeout / 1000} s (${reasoning} caractères de réflexion) : baissez la réflexion dans la carte « Cerveau local ».`,
               );
             if (stalled)
               throw new Error(

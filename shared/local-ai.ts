@@ -2,6 +2,19 @@
 export const LOCAL_AI_SERVICES = ['llm', 'stt', 'tts', 'memory'] as const;
 export type LocalAIServiceName = (typeof LOCAL_AI_SERVICES)[number];
 
+/** Effort de réflexion demandé au LLM (`reasoning_effort`) ; `none` la coupe. */
+export const LOCAL_AI_REASONING = ['none', 'low', 'medium', 'high'] as const;
+export type LocalAIReasoning = (typeof LOCAL_AI_REASONING)[number];
+
+export const localAIReasoningLabel = (effort: LocalAIReasoning) =>
+  effort === 'none'
+    ? 'Désactivée (le plus rapide)'
+    : effort === 'low'
+      ? 'Légère'
+      : effort === 'medium'
+        ? 'Moyenne'
+        : 'Approfondie (le plus lent)';
+
 export interface LocalAIService {
   /** Adresse du serveur, avec ou sans /v1 (http://machine-ia:8080). */
   baseUrl: string;
@@ -19,6 +32,8 @@ export interface LocalAISettings {
   bargeIn: boolean;
   /** Phrases d’attente (« Je regarde ça. ») pendant que les outils travaillent. */
   fillers: boolean;
+  /** Réflexion du LLM pendant la conversation : plus juste, mais plus lente. */
+  reasoning: LocalAIReasoning;
 }
 export interface LocalAITestResult {
   service: LocalAIServiceName;
@@ -97,6 +112,12 @@ export function localAISettingsError(value: unknown): string | null {
   // Absent des réglages enregistrés avant son ajout : activé par défaut.
   if (input.fillers !== undefined && typeof input.fillers !== 'boolean')
     return 'Réglage des phrases d’attente invalide.';
+  // Absent des réglages enregistrés avant son ajout : réflexion coupée.
+  if (
+    input.reasoning !== undefined &&
+    !(LOCAL_AI_REASONING as readonly unknown[]).includes(input.reasoning)
+  )
+    return 'Effort de réflexion invalide.';
   return null;
 }
 
@@ -123,5 +144,6 @@ export function normalizeLocalAISettings(value: LocalAISettings): LocalAISetting
     silenceMs: value.silenceMs,
     bargeIn: value.bargeIn,
     fillers: value.fillers ?? true,
+    reasoning: value.reasoning ?? 'none',
   };
 }

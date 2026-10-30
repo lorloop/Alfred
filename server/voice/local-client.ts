@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { LocalAIService } from '../../shared/local-ai.js';
+import type { LocalAIReasoning, LocalAIService } from '../../shared/local-ai.js';
 
 /** Adresse saisie avec ou sans /v1 : les clients compatibles OpenAI attendent …/v1. */
 export function apiBase(baseUrl: string): string {
@@ -31,6 +31,13 @@ export const NO_THINKING = {
   reasoning_effort: 'none',
   chat_template_kwargs: { enable_thinking: false },
 } as const;
+
+/** Options d’une requête selon l’effort de réflexion choisi dans la carte « Cerveau local ». */
+export function reasoningOptions(effort: LocalAIReasoning) {
+  return effort === 'none'
+    ? NO_THINKING
+    : ({ reasoning_effort: effort, chat_template_kwargs: { enable_thinking: true } } as const);
+}
 
 /** Retire un raisonnement <think>…</think> resté dans la réponse et les clôtures Markdown. */
 export function stripReasoning(text: string): string {
