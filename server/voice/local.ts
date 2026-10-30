@@ -22,6 +22,8 @@ const MAX_TOOL_ROUNDS = 8;
 const MAX_PENDING_TOOLS = 32;
 const HISTORY_LIMIT = 40;
 const GREETING_TIMEOUT_MS = 4_000;
+/** Délai pour le premier morceau de réponse du LLM : chargement du modèle, file d’attente… */
+const LLM_FIRST_CHUNK_MS = 45_000;
 const SESSION_MAX_MS = 15 * 60_000;
 
 /** Phrases que Whisper invente sur du bruit ou du silence, surtout en français. */
@@ -231,6 +233,8 @@ export interface LocalVoiceOptions {
   /** Journal de diagnostic : durées et niveaux seulement, jamais le son ni le texte. */
   log?: (level: 'info' | 'warn', message: string, details?: Record<string, unknown>) => void;
   now?: () => number;
+  /** Délai du premier morceau de réponse du LLM ; 45 s par défaut. */
+  firstChunkTimeoutMs?: number;
   /** Horloge de lecture, remplaçable dans les tests. */
   setInterval?: typeof globalThis.setInterval;
 }
@@ -248,6 +252,7 @@ export function createLocalVoiceAdapter(
 ): VoiceProviderAdapter {
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => {});
+  const firstChunkTimeout = options.firstChunkTimeoutMs ?? LLM_FIRST_CHUNK_MS;
   const http = { apiKey: options.apiKey, fetch: options.fetch };
   return {
     async connect(configuration, emit) {
@@ -388,43 +393,80 @@ export function createLocalVoiceAdapter(
       async function respond(signal: AbortSignal, voice: ReturnType<typeof speaker>) {
         let spoken = '';
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-          const stream = await client.chat.completions.create(
-            {
-              model: settings.llm.model,
-              messages: [{ role: 'system', content: config.instructions }, ...history],
-              ...(config.tools.length && round < MAX_TOOL_ROUNDS
-                ? { tools: toolDefinitions(), tool_choice: 'auto' as const }
-                : {}),
-              stream: true,
-              ...NO_THINKING,
-            },
-            { signal },
-          );
+          const tools = config.tools.length && round < MAX_TOOL_ROUNDS ? toolDefinitions() : [];
+          log('info', 'Appel au LLM', {
+            etape: round + 1,
+            messages: history.length + 1,
+            outils: tools.length,
+            // Taille de la demande en caractères : un contexte trop petit la tronque ou la refuse.
+            taille:
+              config.instructions.length +
+              JSON.stringify(history).length +
+              JSON.stringify(tools).length,
+          });
+          // Un LLM muet (modèle en chargement, file d’attente pleine) ne doit pas bloquer la session.
+          const request = new AbortController();
+          const relay = () => request.abort();
+          signal.addEventListener('abort', relay, { once: true });
+          let stalled = false;
+          const watchdog = setTimeout(() => {
+            stalled = true;
+            request.abort();
+          }, firstChunkTimeout);
+          watchdog.unref?.();
+          const requested = now();
           const splitter = sentenceSplitter();
           const calls = new Map<number, ToolCall>();
           let content = '';
           let thinking = false;
-          for await (const chunk of stream) {
-            const delta = chunk.choices[0]?.delta;
-            if (!delta) continue;
-            for (const call of delta.tool_calls ?? []) {
-              const current = calls.get(call.index) ?? { id: '', name: '', arguments: '' };
-              if (call.id) current.id = call.id;
-              if (call.function?.name) current.name += call.function.name;
-              if (call.function?.arguments) current.arguments += call.function.arguments;
-              calls.set(call.index, current);
+          let first = true;
+          try {
+            const stream = await client.chat.completions.create(
+              {
+                model: settings.llm.model,
+                messages: [{ role: 'system', content: config.instructions }, ...history],
+                ...(tools.length ? { tools, tool_choice: 'auto' as const } : {}),
+                stream: true,
+                ...NO_THINKING,
+              },
+              { signal: request.signal },
+            );
+            for await (const chunk of stream) {
+              if (first) {
+                first = false;
+                clearTimeout(watchdog);
+                log('info', 'Premier morceau du LLM', { delaiMs: now() - requested });
+              }
+              const delta = chunk.choices[0]?.delta;
+              if (!delta) continue;
+              for (const call of delta.tool_calls ?? []) {
+                const current = calls.get(call.index) ?? { id: '', name: '', arguments: '' };
+                if (call.id) current.id = call.id;
+                if (call.function?.name) current.name += call.function.name;
+                if (call.function?.arguments) current.arguments += call.function.arguments;
+                calls.set(call.index, current);
+              }
+              let text = delta.content ?? '';
+              if (!text) continue;
+              content += text;
+              // Raisonnement éventuel : jamais prononcé.
+              if (thinking || text.includes('<think>')) {
+                const end = text.indexOf('</think>');
+                thinking = end < 0;
+                if (thinking) continue;
+                text = text.slice(end + '</think>'.length);
+              }
+              for (const sentence of splitter.push(text)) voice.say(sentence);
             }
-            let text = delta.content ?? '';
-            if (!text) continue;
-            content += text;
-            // Raisonnement éventuel : jamais prononcé.
-            if (thinking || text.includes('<think>')) {
-              const end = text.indexOf('</think>');
-              thinking = end < 0;
-              if (thinking) continue;
-              text = text.slice(end + '</think>'.length);
-            }
-            for (const sentence of splitter.push(text)) voice.say(sentence);
+          } catch (error) {
+            if (stalled)
+              throw new Error(
+                `LLM sans réponse après ${firstChunkTimeout / 1000} s : modèle en chargement, file d’attente (Hermes ?) ou contexte trop long.`,
+              );
+            throw error;
+          } finally {
+            clearTimeout(watchdog);
+            signal.removeEventListener('abort', relay);
           }
           const said = stripReasoning(content);
           if (!calls.size) {
@@ -467,8 +509,8 @@ export function createLocalVoiceAdapter(
           const text = await transcribe(settings.stt, pcm, { ...http, signal });
           if (signal.aborted) return;
           log('info', 'Phrase transcrite', {
-            audioMs: Math.round(pcm.length / BYTES_PER_MS),
-            transcriptionMs: now() - turnStarted,
+            dureeParoleMs: Math.round(pcm.length / BYTES_PER_MS),
+            ecouteMs: now() - turnStarted,
             caracteres: text.length,
             ignoree: isLikelyHallucination(text),
           });

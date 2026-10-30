@@ -353,7 +353,8 @@ export function mirrorBlocker(
   if (!connection.fresh)
     return { id: 'connection', reason: 'Connexion au serveur interrompue, reconnexion en cours.' };
   if (['connecting', 'ready', 'closing'].includes(state.session.phase)) return null;
-  if (state.setup?.openaiKey === false)
+  // Clé ou cerveau local du fournisseur choisi ; openaiKey seul pour un ancien serveur.
+  if ((state.setup?.voiceKey ?? state.setup?.openaiKey) === false)
     return {
       id: 'openai-key',
       reason: 'Cornelius n’est pas encore configuré : ouvrez l’administration sur cet ordinateur.',

@@ -370,3 +370,48 @@ test('un bruit de fond amplifié par le navigateur n’empêche pas la fin de ph
   assert.ok(logs.includes('Fin de phrase détectée'));
   await connection.close();
 });
+
+test('un LLM muet ne bloque pas la session : délai, message clair, retour à l’écoute', async () => {
+  const ai = fakeLocalAI();
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (!url.endsWith('/chat/completions')) return ai.fetch(input, init);
+    // Ne répond jamais, sauf abandon.
+    return new Promise<Response>((_, reject) =>
+      init?.signal?.addEventListener('abort', () =>
+        reject(new DOMException('abandon', 'AbortError')),
+      ),
+    );
+  };
+  const events: VoiceEvent[] = [];
+  const logs: { message: string; details?: Record<string, unknown> }[] = [];
+  const connection = await createLocalVoiceAdapter(settings, {
+    fetch,
+    firstChunkTimeoutMs: 100,
+    log: (_level, message, details) => logs.push({ message, details }),
+  }).connect({ instructions: '', tools: [], webSearch: false }, (event) => events.push(event));
+  connection.audio(pcm(1000, false));
+  connection.audio(pcm(600, true));
+  connection.audio(pcm(400, false));
+  await waitFor(() => events.some((event) => event.type === 'turn_completed'));
+  const failure = logs.find((entry) => entry.message === 'Tour de conversation local en échec');
+  assert.match(String(failure?.details?.error), /LLM sans réponse/);
+  assert.ok(logs.some((entry) => entry.message === 'Appel au LLM'));
+  await connection.close();
+});
+
+test('miroir : le cerveau local configuré suffit, sans clé OpenAI', async () => {
+  const { mirrorBlocker } = await import('../shared/readiness.js');
+  const base = {
+    session: { phase: 'idle' },
+    wakeWord: { enabled: false, ready: false },
+    openaiBlocked: false,
+    // S’arrête au motif suivant, « Activer la voix », sans exiger un état complet.
+    browserAudioReady: false,
+  } as never as Parameters<typeof mirrorBlocker>[0];
+  const blocked = (setup: Record<string, boolean>) =>
+    mirrorBlocker({ ...base, setup } as never, { fresh: true })?.id === 'openai-key';
+  assert.equal(blocked({ openaiKey: false, voiceKey: true }), false);
+  assert.equal(blocked({ openaiKey: true, voiceKey: false }), true);
+  assert.equal(blocked({ openaiKey: false }), true);
+});
