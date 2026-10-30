@@ -768,3 +768,59 @@ test('après la phrase d’attente, le bruit pendant que le LLM travaille ne cou
   );
   await connection.close();
 });
+
+test('réflexion trop longue : phrase d’attente, retour à « thinking », relance sans réflexion', async () => {
+  const ai = fakeLocalAI();
+  const bodies: { reasoning_effort: string }[] = [];
+  // Première étape : le LLM ne fait que réfléchir ; la relance répond tout de suite.
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (!url.endsWith('/chat/completions')) return ai.fetch(input, init);
+    bodies.push(JSON.parse(String(init?.body)));
+    if (bodies.length > 1)
+      return sse([delta({ role: 'assistant', content: 'Il est dix heures.' }, 'stop')]);
+    const encoder = new TextEncoder();
+    let timer: ReturnType<typeof setInterval>;
+    const body = new ReadableStream({
+      start(controller) {
+        timer = setInterval(() => {
+          const chunk = delta({ reasoning_content: 'Voyons… ' });
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        }, 20);
+        init?.signal?.addEventListener('abort', () => {
+          clearInterval(timer);
+          controller.error(new DOMException('abandon', 'AbortError'));
+        });
+      },
+      cancel: () => clearInterval(timer),
+    });
+    return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const events: VoiceEvent[] = [];
+  const logs: string[] = [];
+  const connection = await createLocalVoiceAdapter(
+    { ...settings, reasoning: 'low' },
+    {
+      fetch,
+      thinkingFillerMs: 30,
+      reasoningBudgetMs: 1200,
+      log: (_level, message) => logs.push(message),
+    },
+  ).connect({ instructions: '', tools: [], webSearch: false }, (event) => events.push(event));
+  connection.audio(pcm(1000, false));
+  connection.audio(pcm(600, true));
+  connection.audio(pcm(400, false));
+  await waitFor(() => events.some((event) => event.type === 'turn_completed'), 5000);
+
+  assert.ok(logs.includes('Réflexion trop longue : étape relancée sans réflexion'));
+  assert.deepEqual(
+    bodies.map((body) => body.reasoning_effort),
+    ['low', 'none'],
+  );
+  // La phrase d’attente jouée, Cornelius repasse à « thinking » : la conversation reste ouverte.
+  const states = events.flatMap((event) => (event.type === 'state' ? [event.state] : []));
+  assert.deepEqual(states, ['thinking', 'speaking', 'thinking', 'speaking', 'listening']);
+  const answer = events.find((event) => event.type === 'assistant_transcript');
+  assert.equal(answer?.type === 'assistant_transcript' && answer.text, 'Il est dix heures.');
+  await connection.close();
+});

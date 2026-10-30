@@ -64,6 +64,13 @@ export const LOCAL_FILLER_LONG = 'Encore un petit instant.';
 export const LOCAL_THINKING_FILLERS = ['Voyons voir.', 'Hmm, un instant.', 'Laisse-moi réfléchir.'];
 /** Réflexion silencieuse plus longue que ce délai : une phrase d’attente pour combler le blanc. */
 const THINKING_FILLER_MS = 1_200;
+/**
+ * Réflexion sans rien dire au-delà de ce délai : l’étape repart sans réflexion. Qwen3 ignore
+ * l’effort demandé et peut réfléchir près de 30 s, même en « Légère ».
+ */
+const REASONING_BUDGET_MS = 8_000;
+/** Plus aucun son depuis ce délai pendant un tour : Cornelius réfléchit ou attend un outil. */
+const SPEAKING_GAP_MS = 600;
 /** Outil plus long que ce délai : une seconde phrase d’attente, une seule fois par tour. */
 const FILLER_LONG_TOOL_MS = 6_000;
 
@@ -343,6 +350,8 @@ export interface LocalVoiceOptions {
   stepTimeoutMs?: number;
   /** Silence de réflexion avant la phrase d’attente ; 1,2 s par défaut. */
   thinkingFillerMs?: number;
+  /** Réflexion muette avant de repartir sans réflexion ; 8 s par défaut. */
+  reasoningBudgetMs?: number;
   /** Horloge de lecture, remplaçable dans les tests. */
   setInterval?: typeof globalThis.setInterval;
 }
@@ -363,6 +372,7 @@ export function createLocalVoiceAdapter(
   const firstChunkTimeout = options.firstChunkTimeoutMs ?? LLM_FIRST_CHUNK_MS;
   const stepTimeout = options.stepTimeoutMs ?? LLM_STEP_MS;
   const thinkingFillerDelay = options.thinkingFillerMs ?? THINKING_FILLER_MS;
+  const reasoningBudget = options.reasoningBudgetMs ?? REASONING_BUDGET_MS;
   const http = { apiKey: options.apiKey, fetch: options.fetch };
   return {
     async connect(configuration, emit) {
@@ -402,6 +412,7 @@ export function createLocalVoiceAdapter(
       let playbackAhead = 0;
       let lastTick = now();
       let drained: (() => void) | null = null;
+      let quietSince: number | null = null;
       const tick = () => {
         const current = now();
         playbackAhead = Math.max(0, playbackAhead - (current - lastTick));
@@ -412,6 +423,17 @@ export function createLocalVoiceAdapter(
           setState('speaking');
           notify({ type: 'assistant_speech', pcm: chunk });
         }
+        // Phrase d’attente finie, réponse pas encore là : retour à « thinking ». Sinon le
+        // contrôleur croit la réponse terminée et ferme la conversation sur silence.
+        if (playback.length || playbackAhead > 0) quietSince = null;
+        else quietSince ??= current;
+        if (
+          turn &&
+          state === 'speaking' &&
+          quietSince !== null &&
+          current - quietSince >= SPEAKING_GAP_MS
+        )
+          setState('thinking');
         if (!playback.length && playbackAhead === 0 && drained) {
           const done = drained;
           drained = null;
@@ -511,6 +533,7 @@ export function createLocalVoiceAdapter(
         let spoken = '';
         let filled = false;
         let reminded = false;
+        let thinkingAllowed = true;
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
           const tools = config.tools.length && round < MAX_TOOL_ROUNDS ? toolDefinitions() : [];
           log('info', 'Appel au LLM', {
@@ -543,7 +566,7 @@ export function createLocalVoiceAdapter(
           const requested = now();
           // La réflexion sert au choix des outils, à la première étape. Après leurs résultats,
           // il ne reste qu’à les reformuler : réfléchir encore retarderait la réponse pour rien.
-          const effort = round === 0 ? settings.reasoning : 'none';
+          const effort = round === 0 && thinkingAllowed ? settings.reasoning : 'none';
           let voiced = false;
           // Réflexion silencieuse qui dure : une courte phrase évite le blanc. Elle tient lieu
           // de phrase d’attente avant un outil, pour ne pas en enchaîner deux.
@@ -561,6 +584,17 @@ export function createLocalVoiceAdapter(
           const splitter = sentenceSplitter();
           const calls = new Map<number, ToolCall>();
           let content = '';
+          // Réflexion qui s’éternise sans rien dire ni choisir d’outil : on repart sans elle.
+          let overthought = false;
+          const budget =
+            effort !== 'none'
+              ? setTimeout(() => {
+                  if (voiced || calls.size || stripReasoning(content)) return;
+                  overthought = true;
+                  request.abort();
+                }, reasoningBudget)
+              : undefined;
+          budget?.unref?.();
           let thinking = false;
           let first = true;
           try {
@@ -617,20 +651,35 @@ export function createLocalVoiceAdapter(
             // Le client OpenAI termine le flux sans erreur quand on l’abandonne : le signaler.
             if (overrun || stalled) throw new Error('Étape du LLM abandonnée.');
           } catch (error) {
-            if (overrun)
-              throw new Error(
-                `LLM toujours en train d’écrire après ${stepTimeout / 1000} s (${reasoning} caractères de réflexion) : baissez la réflexion dans la carte « Cerveau local ».`,
-              );
-            if (stalled)
-              throw new Error(
-                `LLM sans réponse après ${firstChunkTimeout / 1000} s : modèle en chargement, file d’attente (Hermes ?) ou contexte trop long.`,
-              );
-            throw error;
+            // Réflexion trop longue : traitée après le nettoyage, l’étape repart sans elle.
+            if (!overthought || signal.aborted) {
+              if (overrun)
+                throw new Error(
+                  `LLM toujours en train d’écrire après ${stepTimeout / 1000} s (${reasoning} caractères de réflexion) : baissez la réflexion dans la carte « Cerveau local ».`,
+                );
+              if (stalled)
+                throw new Error(
+                  `LLM sans réponse après ${firstChunkTimeout / 1000} s : modèle en chargement, file d’attente (Hermes ?) ou contexte trop long.`,
+                );
+              throw error;
+            }
           } finally {
             clearTimeout(watchdog);
             clearTimeout(deadline);
             clearTimeout(thinkingFiller);
+            clearTimeout(budget);
             signal.removeEventListener('abort', relay);
+          }
+          if (overthought) {
+            if (signal.aborted) return spoken;
+            log('warn', 'Réflexion trop longue : étape relancée sans réflexion', {
+              etape: round + 1,
+              dureeMs: now() - requested,
+              reflexion: reasoning,
+            });
+            thinkingAllowed = false;
+            round--;
+            continue;
           }
           const said = stripReasoning(content);
           // Temps d’écriture du LLM, à distinguer du temps des outils : un long texte « brut »
