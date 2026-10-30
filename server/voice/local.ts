@@ -50,6 +50,10 @@ export const LOCAL_FILLERS = [
   'Une seconde.',
 ];
 export const LOCAL_FILLER_LONG = 'Encore un petit instant.';
+/** Phrases dites quand le LLM réfléchit longtemps avant de répondre ou de choisir un outil. */
+export const LOCAL_THINKING_FILLERS = ['Voyons voir.', 'Hmm, un instant.', 'Laisse-moi réfléchir.'];
+/** Réflexion silencieuse plus longue que ce délai : une phrase d’attente pour combler le blanc. */
+const THINKING_FILLER_MS = 1_200;
 /** Outil plus long que ce délai : une seconde phrase d’attente, une seule fois par tour. */
 const FILLER_LONG_TOOL_MS = 6_000;
 
@@ -297,6 +301,8 @@ export interface LocalVoiceOptions {
   firstChunkTimeoutMs?: number;
   /** Durée maximale d’une étape du LLM ; 40 s par défaut. */
   stepTimeoutMs?: number;
+  /** Silence de réflexion avant la phrase d’attente ; 1,2 s par défaut. */
+  thinkingFillerMs?: number;
   /** Horloge de lecture, remplaçable dans les tests. */
   setInterval?: typeof globalThis.setInterval;
 }
@@ -316,6 +322,7 @@ export function createLocalVoiceAdapter(
   const log = options.log ?? (() => {});
   const firstChunkTimeout = options.firstChunkTimeoutMs ?? LLM_FIRST_CHUNK_MS;
   const stepTimeout = options.stepTimeoutMs ?? LLM_STEP_MS;
+  const thinkingFillerDelay = options.thinkingFillerMs ?? THINKING_FILLER_MS;
   const http = { apiKey: options.apiKey, fetch: options.fetch };
   return {
     async connect(configuration, emit) {
@@ -337,6 +344,7 @@ export function createLocalVoiceAdapter(
       let turn: AbortController | null = null;
       // Tour de rôle des phrases d’attente, pour ne pas répéter la même à chaque question.
       let fillerIndex = Math.floor(Math.random() * LOCAL_FILLERS.length);
+      let thinkingFillerIndex = Math.floor(Math.random() * LOCAL_THINKING_FILLERS.length);
       let state: 'listening' | 'thinking' | 'speaking' = 'listening';
       const notify = (event: VoiceEvent) => {
         if (!closed) emit(event);
@@ -489,6 +497,23 @@ export function createLocalVoiceAdapter(
           deadline.unref?.();
           let reasoning = 0;
           const requested = now();
+          // La réflexion sert au choix des outils, à la première étape. Après leurs résultats,
+          // il ne reste qu’à les reformuler : réfléchir encore retarderait la réponse pour rien.
+          const effort = round === 0 ? settings.reasoning : 'none';
+          let voiced = false;
+          // Réflexion silencieuse qui dure : une courte phrase évite le blanc. Elle tient lieu
+          // de phrase d’attente avant un outil, pour ne pas en enchaîner deux.
+          const thinkingFiller =
+            effort !== 'none' && settings.fillers !== false && !filled && !spoken
+              ? setTimeout(() => {
+                  if (voiced || filled || signal.aborted) return;
+                  filled = true;
+                  voice.say(
+                    LOCAL_THINKING_FILLERS[thinkingFillerIndex++ % LOCAL_THINKING_FILLERS.length]!,
+                  );
+                }, thinkingFillerDelay)
+              : undefined;
+          thinkingFiller?.unref?.();
           const splitter = sentenceSplitter();
           const calls = new Map<number, ToolCall>();
           let content = '';
@@ -501,11 +526,11 @@ export function createLocalVoiceAdapter(
                 messages: [
                   { role: 'system', content: localInstructions(config.instructions, config.tools) },
                   // Réflexion choisie dans « Cerveau local » ; /no_think seulement si coupée.
-                  ...(settings.reasoning === 'none' ? withoutThinking(history) : history),
+                  ...(effort === 'none' ? withoutThinking(history) : history),
                 ],
                 ...(tools.length ? { tools, tool_choice: 'auto' as const } : {}),
                 stream: true,
-                ...reasoningOptions(settings.reasoning),
+                ...reasoningOptions(effort),
               },
               { signal: request.signal },
             );
@@ -538,7 +563,12 @@ export function createLocalVoiceAdapter(
                 if (thinking) continue;
                 text = text.slice(end + '</think>'.length);
               }
-              for (const sentence of splitter.push(text)) voice.say(sentence);
+              for (const sentence of splitter.push(text)) {
+                voiced = true;
+                voice.say(sentence);
+              }
+              // Le modèle a commencé à répondre : plus de blanc à combler.
+              if (text.trim()) clearTimeout(thinkingFiller);
             }
             // Le client OpenAI termine le flux sans erreur quand on l’abandonne : le signaler.
             if (overrun || stalled) throw new Error('Étape du LLM abandonnée.');
@@ -555,6 +585,7 @@ export function createLocalVoiceAdapter(
           } finally {
             clearTimeout(watchdog);
             clearTimeout(deadline);
+            clearTimeout(thinkingFiller);
             signal.removeEventListener('abort', relay);
           }
           const said = stripReasoning(content);

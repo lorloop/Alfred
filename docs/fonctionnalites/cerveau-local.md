@@ -27,6 +27,8 @@ Le réglage **Réflexion du LLM** de la carte « Cerveau local » choisit l’ef
 | Désactivée (par défaut) | Réponse en 1 à 3 s. Le modèle peut répondre de mémoire au lieu d’appeler un outil, ou dire à tort qu’il ne peut pas vérifier (« l’état de la lumière »). |
 | Légère, Moyenne, Approfondie | Le modèle réfléchit avant de répondre : il choisit mieux ses outils et se trompe moins en calcul, mais répond plusieurs secondes plus tard. Selon le modèle, les trois niveaux peuvent se valoir (Qwen3 réfléchit ou non). |
 
+Pour garder une conversation fluide, la réflexion ne sert qu’à la première étape d’une réponse, celle où le modèle choisit ses outils : une fois leurs résultats reçus, il les reformule sans réfléchir. Si la réflexion dure plus d’une seconde sans rien à dire, Cornelius prononce une courte phrase (« Voyons voir. ») qui tient lieu de phrase d’attente avant l’outil ; elle se coupe avec « Phrases d’attente ».
+
 L’accueil et l’extraction des souvenirs restent toujours sans réflexion. Si une réponse dépasse 40 s, le journal l’indique : baissez alors la réflexion.
 
 Les valeurs de départ peuvent venir de `.env` (`LOCALAI_*`, voir `.env.example`).

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   LOCAL_FILLERS,
+  LOCAL_THINKING_FILLERS,
   createLocalVoiceAdapter,
   decodeWav,
   encodeWav,
@@ -550,6 +551,57 @@ test('réflexion choisie dans l’administration : effort transmis, sans /no_thi
   assert.equal(chat.reasoning_effort, 'medium');
   assert.equal(chat.chat_template_kwargs.enable_thinking, true);
   assert.doesNotMatch(chat.messages.at(-1)!.content, /no_think/);
+  await connection.close();
+});
+
+test('réflexion au choix de l’outil seulement, et une phrase d’attente quand elle dure', async () => {
+  const ai = fakeLocalAI();
+  let chats = 0;
+  // La première étape « réfléchit » 150 ms avant de choisir l’outil.
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.endsWith('/chat/completions') && ++chats === 1)
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    return ai.fetch(input, init);
+  };
+  const events: VoiceEvent[] = [];
+  const connection = await createLocalVoiceAdapter(
+    { ...settings, reasoning: 'medium' },
+    { fetch, thinkingFillerMs: 30 },
+  ).connect(
+    {
+      instructions: '',
+      tools: [{ name: 'clock__now', description: 'Heure', parameters: { type: 'object' } }],
+      webSearch: false,
+    },
+    (event) => events.push(event),
+  );
+  connection.audio(pcm(1000, false));
+  connection.audio(pcm(600, true));
+  connection.audio(pcm(400, false));
+  await waitFor(() => events.some((event) => event.type === 'tool_call'));
+  const call = events.find((event) => event.type === 'tool_call');
+  connection.result(call?.type === 'tool_call' ? call.id : '', '{"heure":"10:00"}');
+  await waitFor(() => events.some((event) => event.type === 'turn_completed'));
+
+  const bodies = ai.calls
+    .filter((item) => item.url.endsWith('/chat/completions'))
+    .map((item) => item.body as { reasoning_effort: string; messages: { content: unknown }[] });
+  assert.deepEqual(
+    bodies.map((body) => body.reasoning_effort),
+    ['medium', 'none'],
+  );
+  // Après l’outil, /no_think coupe aussi la réflexion des gabarits qui ignorent les options.
+  assert.match(
+    String(bodies[1]!.messages.find((m) => /Quelle heure/.test(String(m.content)))?.content),
+    /no_think/,
+  );
+  const spoken = ai.calls
+    .filter((item) => item.url.endsWith('/audio/speech'))
+    .map((item) => (item.body as { input: string }).input);
+  // Une seule phrase d’attente : celle de la réflexion remplace celle de l’outil.
+  assert.ok(LOCAL_THINKING_FILLERS.includes(spoken[0]!));
+  assert.deepEqual(spoken.slice(1), ['Il est dix heures.', 'Bonne journée !']);
   await connection.close();
 });
 
