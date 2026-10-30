@@ -301,7 +301,7 @@ export async function createApp(
           const { createLocalVoiceAdapter } = await import('./voice/local.js');
           return createLocalVoiceAdapter(localAI.get(), {
             apiKey: localAI.apiKey(),
-            log: (message, details) => logs.write('warn', 'local', message, details),
+            log: (level, message, details) => logs.write(level, 'local', message, details),
           }).connect(config, emit);
         },
       },

@@ -25,3 +25,5 @@ playwright-report/
 brag-output*/
 .pytest_cache/
 .venv-*/
+# Réglages de l’éditeur JetBrains.
+.idea/

@@ -228,7 +228,8 @@ export function speakable(text: string): string {
 export interface LocalVoiceOptions {
   apiKey?: string;
   fetch?: typeof globalThis.fetch;
-  log?: (message: string, details?: Record<string, unknown>) => void;
+  /** Journal de diagnostic : durées et niveaux seulement, jamais le son ni le texte. */
+  log?: (level: 'info' | 'warn', message: string, details?: Record<string, unknown>) => void;
   now?: () => number;
   /** Horloge de lecture, remplaçable dans les tests. */
   setInterval?: typeof globalThis.setInterval;
@@ -461,9 +462,16 @@ export function createLocalVoiceAdapter(
         turn = controller;
         const { signal } = controller;
         setState('thinking');
+        const turnStarted = now();
         try {
           const text = await transcribe(settings.stt, pcm, { ...http, signal });
           if (signal.aborted) return;
+          log('info', 'Phrase transcrite', {
+            audioMs: Math.round(pcm.length / BYTES_PER_MS),
+            transcriptionMs: now() - turnStarted,
+            caracteres: text.length,
+            ignoree: isLikelyHallucination(text),
+          });
           if (isLikelyHallucination(text)) {
             if (turn === controller) turn = null;
             setState('listening');
@@ -476,6 +484,7 @@ export function createLocalVoiceAdapter(
           const answer = await respond(signal, voice);
           await voice.done();
           if (signal.aborted) return;
+          log('info', 'Réponse prête', { totalMs: now() - turnStarted });
           await playbackDone();
           if (signal.aborted) return;
           if (answer) {
@@ -490,7 +499,7 @@ export function createLocalVoiceAdapter(
           }
         } catch (error) {
           if (signal.aborted) return;
-          log('Tour de conversation local en échec', {
+          log('warn', 'Tour de conversation local en échec', {
             error: error instanceof Error ? error.message : String(error),
           });
           // Rien à dire : la personne peut reformuler, la session reste ouverte.
@@ -512,11 +521,31 @@ export function createLocalVoiceAdapter(
       let silenceMs = 0;
       let loudMs = 0;
       let noise = 0.005;
+      let peak = 0;
+      let framesSeen = 0;
+      let lastLevelLog = now();
       const analyse = (frame: Buffer) => {
         const level = rms(frame);
-        const threshold = Math.max(0.012, noise * 3);
+        // Bruit de fond : suit vite une baisse, lentement une hausse (une phrase ne le relève pas).
+        // La première seconde calibre vite : le gain automatique du navigateur relève souvent le
+        // bruit au-dessus d’un seuil fixe, et la phrase ne finirait jamais.
+        const calibrating = ++framesSeen <= 1000 / 20;
+        noise =
+          calibrating || level < noise ? noise * 0.8 + level * 0.2 : noise * 0.998 + level * 0.002;
+        const threshold = Math.max(0.01, noise * 2.5);
         const voiced = level > threshold;
-        if (!voiced && !utterance) noise = noise * 0.95 + level * 0.05;
+        peak = Math.max(peak, level);
+        if (now() - lastLevelLog >= 10_000) {
+          log('info', 'Niveau du micro', {
+            bruit: Number(noise.toFixed(4)),
+            seuil: Number(threshold.toFixed(4)),
+            crete: Number(peak.toFixed(4)),
+            phraseEnCours: !!utterance,
+          });
+          lastLevelLog = now();
+          peak = 0;
+        }
+        if (calibrating) return;
         // Pendant la réponse, seule une parole assez longue coupe Cornelius (son propre écho) ;
         // avant qu’il parle, reprendre la parole remplace simplement la question en cours.
         if (turn) {
@@ -551,6 +580,11 @@ export function createLocalVoiceAdapter(
         if (silenceMs < settings.silenceMs && length < MAX_UTTERANCE_MS) return;
         const audio = Buffer.concat(utterance);
         utterance = null;
+        log('info', 'Fin de phrase détectée', {
+          dureeMs: length,
+          paroleMs: voicedMs,
+          coupee: length >= MAX_UTTERANCE_MS,
+        });
         if (voicedMs < MIN_SPEECH_MS) return;
         void runTurn(audio, Math.max(0, utteranceStart), now() - started);
       };
@@ -570,6 +604,11 @@ export function createLocalVoiceAdapter(
       maximum.unref();
 
       notify({ type: 'connected', id: randomUUID() });
+      log('info', 'Session locale ouverte', {
+        llm: settings.llm.model,
+        ecoute: settings.stt.model,
+        voix: settings.tts.model,
+      });
 
       // Accueil : phrase imposée, ou générée par le LLM selon les consignes d’ouverture.
       void (async () => {
@@ -614,7 +653,7 @@ export function createLocalVoiceAdapter(
             endMs: at,
           });
         } catch (error) {
-          log('Accueil local en échec', {
+          log('warn', 'Accueil local en échec', {
             error: error instanceof Error ? error.message : String(error),
           });
         } finally {

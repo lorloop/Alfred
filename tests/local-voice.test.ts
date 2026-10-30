@@ -26,12 +26,13 @@ const settings: LocalAISettings = {
 };
 
 /** Son de 16 kHz : silence ou la-440 Hz, en millisecondes. */
-const pcm = (ms: number, loud: boolean) => {
+const pcm = (ms: number, loud: boolean, hiss = 0) => {
   const samples = (16_000 * ms) / 1000;
   const buffer = Buffer.alloc(samples * 2);
-  if (loud)
-    for (let i = 0; i < samples; i++)
-      buffer.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / 16_000) * 12_000), i * 2);
+  for (let i = 0; i < samples; i++) {
+    const tone = loud ? Math.sin((2 * Math.PI * 440 * i) / 16_000) * 12_000 : 0;
+    buffer.writeInt16LE(Math.round(tone + (Math.random() * 2 - 1) * hiss), i * 2);
+  }
   return buffer;
 };
 
@@ -172,7 +173,8 @@ test('un tour complet : parole, transcription, outil, réponse parlée', async (
     (event) => events.push(event),
   );
   assert.equal(events[0]?.type, 'connected');
-  connection.audio(pcm(200, false));
+  // Première seconde : calibrage du bruit de fond.
+  connection.audio(pcm(1000, false));
   connection.audio(pcm(600, true));
   connection.audio(pcm(400, false));
 
@@ -349,4 +351,22 @@ test('administration : réglages enregistrés puis choix du fournisseur local', 
     (await services.app.inject({ method: 'GET', url: '/api/admin/local-ai' })).statusCode,
     401,
   );
+});
+
+test('un bruit de fond amplifié par le navigateur n’empêche pas la fin de phrase', async () => {
+  const ai = fakeLocalAI();
+  const events: VoiceEvent[] = [];
+  const logs: string[] = [];
+  const connection = await createLocalVoiceAdapter(settings, {
+    fetch: ai.fetch,
+    log: (_level, message) => logs.push(message),
+  }).connect({ instructions: '', tools: [], webSearch: false }, (event) => events.push(event));
+  // Souffle constant d’environ 0,03 de niveau : au-dessus de l’ancien seuil fixe.
+  const hiss = 1_800;
+  connection.audio(pcm(1500, false, hiss));
+  connection.audio(pcm(700, true, hiss));
+  connection.audio(pcm(600, false, hiss));
+  await waitFor(() => events.some((event) => event.type === 'user_transcript'));
+  assert.ok(logs.includes('Fin de phrase détectée'));
+  await connection.close();
 });
