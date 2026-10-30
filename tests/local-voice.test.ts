@@ -520,3 +520,15 @@ test('phrases d’attente désactivables dans l’administration', async () => {
   assert.deepEqual(spoken, ['Il est dix heures.', 'Bonne journée !']);
   await connection.close();
 });
+
+test('le premier morceau part dès une virgule, les suivants à la fin de phrase', () => {
+  const splitter = sentenceSplitter();
+  assert.deepEqual(splitter.push('Oui, demain'), []);
+  assert.deepEqual(splitter.push(' il fera beau sur Paris, avec 3,5 degrés'), [
+    'Oui, demain il fera beau sur Paris,',
+  ]);
+  assert.deepEqual(splitter.push(' le matin, puis 12 l’après-midi. Prends'), [
+    'avec 3,5 degrés le matin, puis 12 l’après-midi.',
+  ]);
+  assert.deepEqual(splitter.flush(), ['Prends']);
+});

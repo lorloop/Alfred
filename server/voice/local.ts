@@ -204,19 +204,29 @@ export async function synthesize(
 }
 
 /** Découpe un texte qui arrive au fil de l’eau en phrases à dire dès qu’elles sont complètes. */
+/** Premier morceau dit dès une virgule, s’il est assez long pour sonner naturel. */
+const FIRST_CLAUSE_MIN_CHARS = 20;
+
 export function sentenceSplitter() {
   let buffer = '';
+  let first = true;
   return {
     push(text: string): string[] {
       buffer += text;
       const sentences: string[] = [];
       // Une ponctuation compte seulement suivie d’un espace : « 3.5 » ou une fin de tampon
-      // attendent la suite.
+      // attendent la suite. Pour le tout premier morceau, une virgule ou un deux-points
+      // suffit : la voix démarre sans attendre la fin d’une longue phrase.
       let consumed = 0;
-      for (const match of buffer.matchAll(/[.!?…]+["»”)]?\s+|\n+/g)) {
+      for (const match of buffer.matchAll(/[.!?…]+["»”)]?\s+|[,;:]\s+|\n+/g)) {
         const end = match.index + match[0].length;
         const sentence = buffer.slice(consumed, end).trim();
-        if (sentence) sentences.push(sentence);
+        const clause = /^[,;:]/.test(match[0]);
+        if (clause && !(first && sentence.length >= FIRST_CLAUSE_MIN_CHARS)) continue;
+        if (sentence) {
+          sentences.push(sentence);
+          first = false;
+        }
         consumed = end;
       }
       buffer = buffer.slice(consumed);
