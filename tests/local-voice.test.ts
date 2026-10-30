@@ -415,3 +415,23 @@ test('miroir : le cerveau local configuré suffit, sans clé OpenAI', async () =
   assert.equal(blocked({ openaiKey: true, voiceKey: false }), true);
   assert.equal(blocked({ openaiKey: false }), true);
 });
+
+test('des pics de bruit isolés n’empêchent pas la fin de phrase (micro sensible)', async () => {
+  const ai = fakeLocalAI();
+  const events: VoiceEvent[] = [];
+  const connection = await createLocalVoiceAdapter(settings, { fetch: ai.fetch }).connect(
+    { instructions: '', tools: [], webSearch: false },
+    (event) => events.push(event),
+  );
+  // Silence ponctué d’un clic de 20 ms toutes les 200 ms, comme le micro du TP401 au repos.
+  const spiky = (ms: number) => {
+    const audio = pcm(ms, false);
+    for (let at = 0; at < ms; at += 200) audio.set(pcm(20, true), at * 32);
+    return audio;
+  };
+  connection.audio(spiky(1000));
+  connection.audio(pcm(600, true));
+  connection.audio(spiky(1000));
+  await waitFor(() => events.some((event) => event.type === 'user_transcript'));
+  await connection.close();
+});

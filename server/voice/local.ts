@@ -11,6 +11,8 @@ const BYTES_PER_MS = (LOCAL_SAMPLE_RATE * 2) / 1000;
 const FRAME_BYTES = 20 * BYTES_PER_MS;
 const PRE_ROLL_MS = 300;
 const MIN_SPEECH_MS = 250;
+/** Trames de 20 ms consécutives au-dessus du seuil pour compter comme de la parole. */
+const SPEECH_RUN_FRAMES = 3;
 const MAX_UTTERANCE_MS = 30_000;
 /** Parole continue nécessaire pour couper Cornelius pendant qu’il parle (écho du haut-parleur). */
 const BARGE_IN_MS = 400;
@@ -561,6 +563,7 @@ export function createLocalVoiceAdapter(
       let utteranceStart = 0;
       let voicedMs = 0;
       let silenceMs = 0;
+      let voicedRun = 0;
       let loudMs = 0;
       let noise = 0.005;
       let peak = 0;
@@ -574,7 +577,7 @@ export function createLocalVoiceAdapter(
         const calibrating = ++framesSeen <= 1000 / 20;
         noise =
           calibrating || level < noise ? noise * 0.8 + level * 0.2 : noise * 0.998 + level * 0.002;
-        const threshold = Math.max(0.01, noise * 2.5);
+        const threshold = Math.max(0.01, noise * 3);
         const voiced = level > threshold;
         peak = Math.max(peak, level);
         if (now() - lastLevelLog >= 10_000) {
@@ -611,13 +614,16 @@ export function createLocalVoiceAdapter(
           utteranceStart = now() - started - PRE_ROLL_MS;
           voicedMs = 0;
           silenceMs = 0;
+          voicedRun = 1;
           return;
         }
         utterance.push(frame);
-        if (voiced) {
-          voicedMs += 20;
-          silenceMs = 0;
-        } else silenceMs += 20;
+        // Un pic isolé (souffle, clic) compte comme du silence : seule une parole d’au moins
+        // 60 ms relance l’attente de fin de phrase. Sinon un micro sensible ne la trouve jamais.
+        voicedRun = voiced ? voicedRun + 1 : 0;
+        if (voiced) voicedMs += 20;
+        if (voicedRun >= SPEECH_RUN_FRAMES) silenceMs = 0;
+        else silenceMs += 20;
         const length = utterance.length * 20;
         if (silenceMs < settings.silenceMs && length < MAX_UTTERANCE_MS) return;
         const audio = Buffer.concat(utterance);
